@@ -1,0 +1,39 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379
+      UPLOAD_DIR: /data/uploads
+      ALLOWED_ORIGINS: http://localhost:3000
+      MAX_FILE_SIZE_MB: "20"
+      CHORD_ENGINE: auto
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      - redis
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build: ./backend
+    environment:
+      REDIS_URL: redis://redis:6379
+      UPLOAD_DIR: /data/uploads
+      CHORD_ENGINE: auto
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      - redis
+    command: python worker.py
+
+volumes:
+  uploads:
+  redis_data:

@@ -1,0 +1,39 @@
+# Runtime (start.sh)
+.run/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.pyc
+
+# Uploads / cache
+/data/
+backend/data/uploads/
+**/s3_cache/
+
+# Node / Next
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+frontend/.env*.local
+frontend/tsconfig.tsbuildinfo
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Models / large binaries (if downloaded later)
+backend/models/*.pt
+backend/models/*.pth
+backend/models/*.ckpt
+!backend/models/.gitkeep
