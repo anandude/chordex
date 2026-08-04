@@ -5,9 +5,12 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { audioUrl, getJobStatus } from "@/lib/api";
 import { transposeKeyLabel, transposeProgression } from "@/lib/transpose";
+import { applyEasyMode } from "@/lib/easyChords";
 import ChordTimeline from "@/components/ChordTimeline";
 import TransposeControl from "@/components/TransposeControl";
 import AudioPlayer from "@/components/AudioPlayer";
+import LyricsDisplay from "@/components/LyricsDisplay";
+import EasyModeControl from "@/components/EasyModeControl";
 
 function activeChordIndex(
   chords: Array<{ timestamp: number; end?: number }>,
@@ -21,15 +24,23 @@ function activeChordIndex(
       (i + 1 < chords.length ? chords[i + 1].timestamp : start + 999);
     if (time >= start && time < end) return i;
   }
-  // after last chord start
   if (time >= chords[chords.length - 1].timestamp) return chords.length - 1;
   return null;
 }
 
 function formatProgression(
-  chords: Array<{ timestamp: number; chord: string }>
+  chords: Array<{ timestamp: number; chord: string }>,
+  opts?: { capo?: number; easy?: boolean }
 ): string {
-  return chords
+  const header: string[] = [];
+  if (opts?.easy) {
+    header.push(
+      opts.capo && opts.capo > 0
+        ? `Easy mode · Capo ${opts.capo}`
+        : "Easy mode · No capo"
+    );
+  }
+  const body = chords
     .map((c) => {
       const m = Math.floor(c.timestamp / 60);
       const s = Math.floor(c.timestamp % 60)
@@ -38,6 +49,7 @@ function formatProgression(
       return `[${m}:${s}] ${c.chord}`;
     })
     .join("\n");
+  return header.length ? `${header.join("\n")}\n\n${body}` : body;
 }
 
 export default function ResultsPage({
@@ -47,6 +59,7 @@ export default function ResultsPage({
 }) {
   const { jobId } = use(params);
   const [semitones, setSemitones] = useState(0);
+  const [easyMode, setEasyMode] = useState(false);
   const [playhead, setPlayhead] = useState(0);
   const [seekTo, setSeekTo] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
@@ -63,7 +76,8 @@ export default function ResultsPage({
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10_000),
   });
 
-  const transposedChords = useMemo(
+  // 1) optional user transpose on original chords
+  const transposedOriginal = useMemo(
     () =>
       data?.result?.chords
         ? transposeProgression(data.result.chords, semitones)
@@ -71,24 +85,50 @@ export default function ResultsPage({
     [data?.result?.chords, semitones]
   );
 
+  // 2) easy mode from transposed (or server precompute when no transpose)
+  const easy = useMemo(() => {
+    if (!transposedOriginal.length) return null;
+    // Prefer live client recompute so transpose + easy compose correctly
+    const key = data?.result?.key
+      ? transposeKeyLabel(data.result.key, semitones)
+      : undefined;
+    return applyEasyMode(transposedOriginal, key);
+  }, [transposedOriginal, data?.result?.key, semitones]);
+
+  const displayChords = easyMode && easy ? easy.chords : transposedOriginal;
+
   const originalKey = data?.result?.key;
   const transposedKey = originalKey
     ? transposeKeyLabel(originalKey, semitones)
     : undefined;
 
-  const activeIndex = activeChordIndex(transposedChords, playhead);
+  const activeIndex = activeChordIndex(displayChords, playhead);
   const isLoading =
     !data || data.status === "queued" || data.status === "processing";
 
   const handleCopy = async () => {
-    const text = formatProgression(transposedChords);
+    const text = formatProgression(displayChords, {
+      easy: easyMode,
+      capo: easy?.capo,
+    });
+    // Append lyrics lines if present
+    const lines = data?.result?.lyric_lines;
+    const full =
+      lines && lines.length
+        ? `${text}\n\n--- Lyrics ---\n${lines.map((l) => l.text).join("\n")}`
+        : text;
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(full);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
       /* ignore */
     }
+  };
+
+  const seek = (ts: number) => {
+    setSeekTo(ts);
+    setTimeout(() => setSeekTo(null), 50);
   };
 
   return (
@@ -112,13 +152,13 @@ export default function ResultsPage({
             <div className="text-center">
               <p className="text-white text-lg font-medium">
                 {data?.status === "processing"
-                  ? "Analyzing chords…"
+                  ? "Analyzing chords & lyrics…"
                   : "Queued for analysis…"}
               </p>
               <p className="text-gray-500 text-sm mt-1 max-w-sm">
                 {!data
                   ? "Server may be waking up — first request can take up to 60 s"
-                  : "Audio analysis usually completes in 10–40 seconds"}
+                  : "Chords + lyrics usually finish in 20–90 seconds (first lyrics run downloads a small model)"}
               </p>
             </div>
           </div>
@@ -139,13 +179,16 @@ export default function ResultsPage({
         {data?.status === "done" && data.result && (
           <div className="space-y-6">
             <div className="flex flex-wrap items-center gap-4 text-sm text-gray-400">
-              <span>
-                🎸 {data.result.chords.length} chord changes
-              </span>
+              <span>🎸 {data.result.chords.length} chord changes</span>
               <span>♩ {data.result.tempo} BPM</span>
               {data.result.key && (
                 <span>
-                  🔑 {semitones === 0 ? data.result.key : transposedKey}
+                  🔑{" "}
+                  {easyMode && easy?.easyKey
+                    ? `${easy.easyKey} (shapes)`
+                    : semitones === 0
+                      ? data.result.key
+                      : transposedKey}
                 </span>
               )}
               {data.result.duration != null && (
@@ -158,6 +201,11 @@ export default function ResultsPage({
               )}
               {data.result.engine && (
                 <span className="text-gray-600">via {data.result.engine}</span>
+              )}
+              {data.result.lyrics_language && (
+                <span className="text-gray-600">
+                  lyrics: {data.result.lyrics_language}
+                </span>
               )}
             </div>
 
@@ -174,29 +222,41 @@ export default function ResultsPage({
               transposedKey={transposedKey}
             />
 
+            <EasyModeControl
+              enabled={easyMode}
+              onChange={setEasyMode}
+              capo={easy?.capo ?? data.result.easy?.capo ?? 0}
+              reason={easy?.reason ?? data.result.easy?.reason}
+              easyKey={easy?.easyKey ?? data.result.easy?.easy_key ?? undefined}
+            />
+
             <div className="flex justify-end">
               <button
                 type="button"
                 onClick={handleCopy}
                 className="text-xs text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 rounded-lg px-3 py-1.5 transition-colors"
               >
-                {copied ? "Copied!" : "Copy progression"}
+                {copied ? "Copied!" : "Copy chords + lyrics"}
               </button>
             </div>
 
             <ChordTimeline
-              chords={transposedChords}
+              chords={displayChords}
               activeIndex={activeIndex}
-              onSelect={(_i, ts) => {
-                setSeekTo(ts);
-                // allow re-seeking same timestamp
-                setTimeout(() => setSeekTo(null), 50);
-              }}
+              onSelect={(_i, ts) => seek(ts)}
+            />
+
+            <LyricsDisplay
+              lines={data.result.lyric_lines}
+              words={data.result.lyrics}
+              currentTime={playhead}
+              error={data.result.lyrics_error}
+              onSeek={seek}
             />
 
             <p className="text-xs text-gray-600 text-center pt-4">
-              Automatic chord detection is best-effort — always trust your ear
-              on complex / distorted tracks.
+              Automatic chords & lyrics are best-effort — always trust your ear
+              on complex tracks.
             </p>
           </div>
         )}

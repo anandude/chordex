@@ -187,4 +187,6 @@ async def health():
         "status": "ok" if redis_ok else "degraded",
         "redis": redis_ok,
         "engine": os.getenv("CHORD_ENGINE", "auto"),
+        "lyrics": os.getenv("ENABLE_LYRICS", "1"),
+        "whisper_model": os.getenv("WHISPER_MODEL", "tiny"),
     }

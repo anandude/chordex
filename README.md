@@ -127,8 +127,13 @@ python ../test-assets/generate_fixtures.py
 |---------|---------|--------|
 | **MVP** | Upload → chords → transpose | Done |
 | **v2 engine** | Chordino / HMM, key, playback | Done |
-| **v3** | Capo + beginner easy chords | Planned |
-| **Later** | Lyrics (Whisper) | Planned |
+| **v2 lyrics** | faster-whisper word/line sync | Done |
+| **v3** | Capo + beginner easy chords | Done |
+
+### Lyrics & easy chords
+
+- **Lyrics**: worker runs `faster-whisper` (`WHISPER_MODEL=tiny` by default). Disable with `ENABLE_LYRICS=0`.
+- **Easy mode**: frontend toggle — strips extensions and suggests capo 0–7 for open shapes. Works offline on the result (no re-upload).
 
 ---
 

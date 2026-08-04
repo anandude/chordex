@@ -16,6 +16,8 @@ services:
       ALLOWED_ORIGINS: http://localhost:3000
       MAX_FILE_SIZE_MB: "20"
       CHORD_ENGINE: auto
+      ENABLE_LYRICS: "1"
+      WHISPER_MODEL: tiny
     volumes:
       - uploads:/data/uploads
     depends_on:
@@ -28,6 +30,10 @@ services:
       REDIS_URL: redis://redis:6379
       UPLOAD_DIR: /data/uploads
       CHORD_ENGINE: auto
+      ENABLE_LYRICS: "1"
+      WHISPER_MODEL: tiny
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE_TYPE: int8
     volumes:
       - uploads:/data/uploads
     depends_on:

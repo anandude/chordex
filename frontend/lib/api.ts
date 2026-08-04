@@ -13,14 +13,37 @@ export interface ChordEvent {
   confidence?: number;
 }
 
+export interface LyricWord {
+  timestamp: number;
+  end?: number;
+  word: string;
+}
+
+export interface LyricLine {
+  timestamp: number;
+  end?: number;
+  text: string;
+}
+
+export interface EasyModeResult {
+  capo: number;
+  score: number;
+  easy_key?: string | null;
+  reason?: string;
+  chords: ChordEvent[];
+}
+
 export interface AnalysisResult {
   chords: ChordEvent[];
   tempo: number;
   key?: string;
   duration?: number;
   engine?: string;
-  /** v2: word-level lyrics (added when lyrics transcription is enabled) */
-  lyrics?: Array<{ timestamp: number; word: string }>;
+  lyrics?: LyricWord[];
+  lyric_lines?: LyricLine[];
+  lyrics_language?: string | null;
+  lyrics_error?: string | null;
+  easy?: EasyModeResult;
 }
 
 export interface JobStatus {
