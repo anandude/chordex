@@ -37,3 +37,7 @@ backend/models/*.pt
 backend/models/*.pth
 backend/models/*.ckpt
 !backend/models/.gitkeep
+
+# Raw design downloads (not wired into the app)
+/assets/
+/public/
