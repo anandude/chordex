@@ -183,7 +183,7 @@ export function applyEasyMode<
 
   for (let capo = 0; capo <= maxCapo; capo++) {
     const shapes = simplifyProgression(chords, capo);
-    let score = scoreProgression(shapes) + capo * 0.02;
+    const score = scoreProgression(shapes) + capo * 0.02;
     if (score < bestScore) {
       bestScore = score;
       bestCapo = capo;

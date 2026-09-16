@@ -18,7 +18,7 @@ from typing import Literal
 
 import redis
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -57,6 +57,24 @@ _MAX_BYTES = int(os.getenv("MAX_FILE_SIZE_MB", "20")) * 1024 * 1024
 _ALLOWED_EXTS = {"mp3", "wav", "ogg", "flac", "m4a"}
 _RESULT_TTL = 3600  # 1 hour
 _URI_TTL = 3600
+_DEFAULT_JOB_TIMEOUT_S = 7200  # 2 h — CPU separation + ASR, plus a one-off
+#                               model download on an uncached language
+
+
+def _job_timeout() -> int:
+    """RQ job timeout in seconds (``JOB_TIMEOUT_S``).
+
+    RQ hard-kills a job once it exceeds its timeout (it SIGKILLs the work horse
+    at ``timeout + 60 s``), which used to fail any first run for hi/ml: the
+    per-language ASR fine-tune (~1 GB) was still downloading when the old
+    1800 s deadline passed, so the job died reporting "Work-horse terminated
+    unexpectedly; waitpid returned None". Long by design; per-stage progress is
+    published to ``progress:{job_id}`` while the job runs.
+    """
+    try:
+        return int(os.getenv("JOB_TIMEOUT_S", str(_DEFAULT_JOB_TIMEOUT_S)))
+    except ValueError:
+        return _DEFAULT_JOB_TIMEOUT_S
 
 
 class AnalyzeResponse(BaseModel):
@@ -67,10 +85,18 @@ class StatusResponse(BaseModel):
     status: Literal["queued", "processing", "done", "failed"]
     result: dict | None = None
     error: str | None = None
+    stage: str | None = None  # pipeline progress: separating → … → done
+    progress: float | None = None
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse, status_code=202)
-async def analyze(file: UploadFile = File(...)):
+async def analyze(
+    file: UploadFile = File(...),
+    language: str | None = Form(default=None),
+    title: str | None = Form(default=None),  # Phase 2: raises LRCLIB hits
+    artist: str | None = Form(default=None),
+    album: str | None = Form(default=None),
+):
     """Accept an audio upload, store it, enqueue analysis, return a job ID."""
     ext = Path(file.filename or "").suffix.lstrip(".").lower()
     if ext not in _ALLOWED_EXTS:
@@ -103,14 +129,31 @@ async def analyze(file: UploadFile = File(...)):
     # Remember URI so we can serve audio during the result TTL window
     _redis_kv.setex(f"uri:{job_id}", _URI_TTL, uri)
 
+    lang = (language or "").strip().lower() or None
+    meta = {
+        k: (v or "").strip() or None
+        for k, v in (("title", title), ("artist", artist), ("album", album))
+    }
     _queue.enqueue(
         "worker.run_chord_detection",
-        uri,
+        args=(uri,),
+        kwargs={"language": lang, **{k: v for k, v in meta.items() if v}},
         job_id=job_id,
-        job_timeout=600,  # 10 min for long tracks / cold model load
+        job_timeout=_job_timeout(),
     )
 
     return AnalyzeResponse(job_id=job_id)
+
+
+def _job_progress(job_id: str) -> tuple[str | None, float | None]:
+    try:
+        raw = _redis_kv.get(f"progress:{job_id}")
+        if raw:
+            data = json.loads(raw)
+            return data.get("stage"), data.get("pct")
+    except Exception:
+        pass
+    return None, None
 
 
 @app.get("/api/status/{job_id}", response_model=StatusResponse)
@@ -128,7 +171,9 @@ async def get_status(job_id: str):
     if job.is_queued:
         return StatusResponse(status="queued")
     if job.is_started:
-        return StatusResponse(status="processing")
+        stage, pct = _job_progress(job_id)
+        return StatusResponse(status="processing", stage=stage or "processing",
+                              progress=pct)
     if job.is_failed:
         error_msg = "Job failed without a traceback."
         if job.exc_info:
@@ -188,5 +233,8 @@ async def health():
         "redis": redis_ok,
         "engine": os.getenv("CHORD_ENGINE", "auto"),
         "lyrics": os.getenv("ENABLE_LYRICS", "1"),
-        "whisper_model": os.getenv("WHISPER_MODEL", "tiny"),
+        "whisper_model": os.getenv("WHISPER_MODEL", "small"),
+        "separation": os.getenv("LYRICS_SEPARATION_BACKEND", "demucs"),
+        "lrclib": os.getenv("LYRICS_LRCLIB", "1"),
+        "alignment": os.getenv("LYRICS_ALIGNMENT", "1"),
     }
