@@ -1,0 +1,3 @@
+TODO — replace with hand-verified native-script transcript for hi_05.
+Source: hand-corrected LRCLIB output, verified by ear.
+One song per file, lines in sung order. Do not score until this placeholder is replaced.

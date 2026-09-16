@@ -1,0 +1,14 @@
+# ---> Audio + model outputs are local-only, never committed <---
+# Eval songs (copyrighted): keep filenames out of git
+songs/*
+!songs/.gitkeep
+# Generated hypotheses per config run
+hyps/*
+!hyps/.gitkeep
+# Local caches (separation stems, LRCLIB responses, alignments)
+cache/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a

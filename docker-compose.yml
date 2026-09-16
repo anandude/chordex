@@ -17,7 +17,13 @@ services:
       MAX_FILE_SIZE_MB: "20"
       CHORD_ENGINE: auto
       ENABLE_LYRICS: "1"
-      WHISPER_MODEL: tiny
+      WHISPER_MODEL: small
+      LYRICS_SEPARATION_BACKEND: demucs
+      LYRICS_LRCLIB: "1"
+      LYRICS_ALIGNMENT: "1"
+      JOB_TIMEOUT_S: "7200"
+      # hf-xet stalls on some networks; see backend/pipeline/hf_setup.py
+      HF_HUB_DISABLE_XET: "1"
     volumes:
       - uploads:/data/uploads
     depends_on:
@@ -31,15 +37,29 @@ services:
       UPLOAD_DIR: /data/uploads
       CHORD_ENGINE: auto
       ENABLE_LYRICS: "1"
-      WHISPER_MODEL: tiny
+      WHISPER_MODEL: small
       WHISPER_DEVICE: cpu
       WHISPER_COMPUTE_TYPE: int8
+      LYRICS_SEPARATION_BACKEND: demucs
+      LYRICS_LRCLIB: "1"
+      LYRICS_ALIGNMENT: "1"
+      LYRICS_LLM_CLEANUP: "0"
+      LYRICS_CACHE_DIR: /data/lyrics_cache
+      JOB_TIMEOUT_S: "7200"
+      # hf-xet stalls on some networks; see backend/pipeline/hf_setup.py
+      HF_HUB_DISABLE_XET: "1"
+    # Persist the HF model cache across container rebuilds — the per-language
+    # ASR weights are 0.5–1.5 GB each and are otherwise re-downloaded.
     volumes:
       - uploads:/data/uploads
+      - lyrics_cache:/data/lyrics_cache
+      - hf_cache:/root/.cache/huggingface
     depends_on:
       - redis
     command: python worker.py
 
 volumes:
   uploads:
+  lyrics_cache:
+  hf_cache:
   redis_data:
