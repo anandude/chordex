@@ -41,8 +41,11 @@ export interface AnalysisResult {
   engine?: string;
   lyrics?: LyricWord[];
   lyric_lines?: LyricLine[];
+  lyric_lines_roman?: LyricLine[];
   lyrics_language?: string | null;
   lyrics_error?: string | null;
+  lyrics_source?: "lrclib_synced" | "lrclib_plain" | "asr" | null;
+  lyrics_cleaned?: boolean | null;
   easy?: EasyModeResult;
 }
 
@@ -50,15 +53,32 @@ export interface JobStatus {
   status: "queued" | "processing" | "done" | "failed";
   result: AnalysisResult | null;
   error: string | null;
+  stage?: string | null;
+  progress?: number | null;
+}
+
+export interface UploadMeta {
+  title?: string;
+  artist?: string;
+  album?: string;
 }
 
 export function audioUrl(jobId: string): string {
   return `${API_URL}/api/audio/${encodeURIComponent(jobId)}`;
 }
 
-export async function uploadAudio(file: File): Promise<{ job_id: string }> {
+export async function uploadAudio(
+  file: File,
+  language?: string,
+  meta?: UploadMeta
+): Promise<{ job_id: string }> {
   const formData = new FormData();
   formData.append("file", file);
+  if (language && language !== "auto") formData.append("language", language);
+  // Phase 2: user-supplied title/artist dramatically raise LRCLIB hit rate.
+  if (meta?.title) formData.append("title", meta.title);
+  if (meta?.artist) formData.append("artist", meta.artist);
+  if (meta?.album) formData.append("album", meta.album);
 
   const res = await fetch(`${API_URL}/api/analyze`, {
     method: "POST",
