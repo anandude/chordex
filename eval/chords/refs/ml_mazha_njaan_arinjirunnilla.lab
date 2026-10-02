@@ -1,0 +1,10 @@
+# STUB — hand annotation pending (see eval/chords/ANNOTATING.md).
+# Song: "Mazha Njaan Arinjirunnilla" (Malayalam film).
+# How to fill in: one "START END HARTE_LABEL" triple per line covering the
+# full song, e.g.
+#   0.000 9.120 N
+#   9.120 12.400 G:maj
+#   12.400 15.050 E:min
+# Rules: sharps only (C#, F# — never Db/Gb), N for silence/intro/outro,
+# keep the triad (maj/min/dim/aug/sus) unless the 7th is unambiguous.
+# Delete this header when the annotation is complete.

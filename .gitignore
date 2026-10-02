@@ -32,6 +32,10 @@ frontend/tsconfig.tsbuildinfo
 .coverage
 htmlcov/
 
+# Agent session / planning scratch (never commit — local-only context)
+.commandcode/
+.zcode/
+
 # Models / large binaries (if downloaded later)
 backend/models/*.pt
 backend/models/*.pth

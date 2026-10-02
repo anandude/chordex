@@ -1,0 +1,39 @@
+{
+  "_comment": "Chord eval manifest (A3). audio = local-only path (may be gitignored); ref = committed .lab (start end Harte-label per line). Add songs here, never average across genres — report per-song + per-genre means.",
+  "songs": [
+    {
+      "id": "syn_c_major",
+      "audio": "../../test-assets/c_major.wav",
+      "ref": "refs/syn_c_major.lab",
+      "genre": "synthetic",
+      "key": "C major",
+      "source": "synthetic (generate_fixtures.py: C4-E4-G4, 4 s)"
+    },
+    {
+      "id": "syn_c_f_g_c",
+      "audio": "../../test-assets/c_f_g_c.wav",
+      "ref": "refs/syn_c_f_g_c.lab",
+      "genre": "synthetic",
+      "key": "C major",
+      "source": "synthetic (generate_fixtures.py: C|F|G|C, 2 s each)"
+    },
+    {
+      "id": "hi_chahun_main_ya_naa",
+      "audio": "../../test-assets/songs/Chahun Main Ya Naa Aashiqui 2 320 Kbps.mp3",
+      "ref": "refs/hi_chahun_main_ya_naa.lab",
+      "genre": "hindi-film",
+      "key": "unknown (annotate me)",
+      "source": "hand annotation pending — see ANNOTATING.md",
+      "status": "pending"
+    },
+    {
+      "id": "ml_mazha_njaan_arinjirunnilla",
+      "audio": "../../test-assets/songs/Mazha Njaan Arinjirunnilla  Dr. Patient  Hariharan  Bennet Veetraag  Rafeeq Ahammed.mp3",
+      "ref": "refs/ml_mazha_njaan_arinjirunnilla.lab",
+      "genre": "malayalam-film",
+      "key": "unknown (annotate me)",
+      "source": "hand annotation pending — see ANNOTATING.md",
+      "status": "pending"
+    }
+  ]
+}
