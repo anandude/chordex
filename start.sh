@@ -4,6 +4,7 @@
 # Usage:
 #   ./start.sh              # Redis (Docker) + API + worker + frontend
 #   ./start.sh --setup      # Install deps first, then start
+#   ./start.sh --prewarm    # Download the lyrics models first (0.5-1.5 GB each)
 #   ./start.sh --docker     # Full stack in Docker (no local frontend HMR)
 #   ./start.sh --stop       # Stop everything started by this script / compose
 #
@@ -30,9 +31,11 @@ die()   { echo -e "${RED}✗${NC} $*" >&2; exit 1; }
 SETUP=0
 DOCKER=0
 STOP=0
+PREWARM=0
 for arg in "$@"; do
   case "$arg" in
     --setup|-s) SETUP=1 ;;
+    --prewarm|-p) PREWARM=1 ;;
     --docker|-d) DOCKER=1 ;;
     --stop) STOP=1 ;;
     --help|-h)
@@ -199,6 +202,16 @@ if [[ -f "$PID_DIR/api.pid" ]] || [[ -f "$PID_DIR/worker.pid" ]] || [[ -f "$PID_
   stop_all
   # restart redis if we just killed our container
   ensure_redis
+fi
+
+# ── prewarm (optional, one-off) ───────────────────────────────────────────────
+# The per-language ASR weights are large and are fetched inside the first job
+# otherwise. RQ tolerates a long first job now (JOB_TIMEOUT_S), but warming up
+# front is friendlier: python prewarm.py --help
+if [[ "$PREWARM" -eq 1 ]]; then
+  info "Prewarming lyrics models (first run only, a few hundred MB to ~1.5 GB each)…"
+  (cd "$ROOT/backend" && "$ROOT/backend/.venv/bin/python" prewarm.py --all) \
+    || warn "Prewarm failed — the worker will still fetch models on demand."
 fi
 
 # ── start services ────────────────────────────────────────────────────────────

@@ -36,8 +36,11 @@ export default function AudioPlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [scrubbing, setScrubbing] = useState(false);
 
+  // keep the latest callback in a ref so the rAF loop never holds a stale one
   const timeCbRef = useRef(onTimeUpdate);
-  timeCbRef.current = onTimeUpdate;
+  useEffect(() => {
+    timeCbRef.current = onTimeUpdate;
+  }, [onTimeUpdate]);
   // rAF loop drives both the page playhead and the local scrubber
   const tick = () => {
     if (audioRef.current) {
@@ -160,6 +163,16 @@ export default function AudioPlayer({
         </button>
 
         <div className="flex-1 min-w-0">
+          {/* Time readout — elapsed left, total right, above the bar */}
+          <div className="flex items-baseline justify-between gap-3 mb-2 font-cl">
+            <span className="text-paper text-sm sm:text-base">
+              {formatTime(currentTime)}
+            </span>
+            <span className="text-paper-dim text-xs sm:text-sm">
+              {duration ? formatTime(duration) : "--:--"}
+            </span>
+          </div>
+
           {/* Chord-aware scrubber */}
           <div
             ref={trackRef}
@@ -208,9 +221,9 @@ export default function AudioPlayer({
                 />
               ))}
             </div>
-            {/* dim the un-played portion */}
+            {/* dim the un-played portion (kept light so chord colours read) */}
             <div
-              className="absolute inset-y-0 right-0 bg-ink/60"
+              className="absolute inset-y-0 right-0 bg-ink/45"
               style={{ left: `${progress}%` }}
             />
             {/* playhead */}
@@ -220,16 +233,14 @@ export default function AudioPlayer({
             />
           </div>
 
-          {/* Time readout */}
-          <div className="flex justify-between mt-2 font-pixel text-paper-dim text-[10px] sm:text-sm whitespace-nowrap shrink-0">
-            <span>{formatTime(currentTime)}</span>
-            <span>{duration ? formatTime(duration) : "--:--"}</span>
-          </div>
+          <p className="mt-2 font-cl text-paper-dim/80 text-[11px] sm:text-xs">
+            coloured by chord — tap to jump
+          </p>
         </div>
       </div>
 
       {error && (
-        <p role="alert" className="font-cl text-tomato text-xs mt-3">
+        <p role="alert" className="font-cl text-tomato text-xs sm:text-sm mt-3">
           {error}
         </p>
       )}

@@ -256,7 +256,12 @@ def transcribe_lyrics(
     vocal_path = separate_vocals(file_path, cfg=cfg)
     stages["separation"] = round(_time.time() - t0, 2)
     models["separation"] = cfg.separation_backend
-    owns_vocal = vocal_path != file_path
+    # NOTE: separate_vocals returns either the shared stage cache (a hit or a
+    # fresh stem) or — on every fallback — the *original upload* as a Path.
+    # Neither is owned by this call, so nothing here is deleted afterwards: a
+    # `owns_vocal = vocal_path != file_path` check used to compare a Path
+    # against a str, always read as "owned", and unlinked the user's upload at
+    # the end of the job (breaking playback). The cache is meant to be reused.
 
     try:
         # ── Phase 3: transcribe (miss only) ──
@@ -265,7 +270,11 @@ def transcribe_lyrics(
             t0 = _time.time()
             from pipeline.asr import transcribe_asr
 
-            asr_out = transcribe_asr(vocal_path, language=lang_hint, cfg=cfg)
+            # progress is threaded through so a first-run model download (or a
+            # slow CPU decode) shows up as a moving stage instead of a stall
+            asr_out = transcribe_asr(
+                vocal_path, language=lang_hint, cfg=cfg, progress=_report
+            )
             stages["transcription"] = round(_time.time() - t0, 2)
             models["asr"] = str(asr_out.get("model", ""))
             if asr_out.get("error") and not asr_out.get("lyrics"):
@@ -344,11 +353,8 @@ def transcribe_lyrics(
             "error": None,
         }
     finally:
-        if owns_vocal:
-            try:
-                os.unlink(vocal_path)
-            except OSError:
-                pass
+        # nothing to clean up — the stem lives in the shared stage cache
+        pass
 
 
 def _transcribe(file_path: str, lang_hint: str | None) -> dict[str, Any]:
