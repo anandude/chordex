@@ -69,6 +69,18 @@ def _native_word_list(
     return (text or "").split(), []
 
 
+def _lines_lack_timing(lines: list[dict[str, Any]]) -> bool:
+    """True when lines carry no usable timing (all zeros) — the shape that
+    used to collapse the chord sheet into detached rows and freeze karaoke
+    at 0:00. Such lines must be spread across the duration before use."""
+    if not lines:
+        return True
+    return all(
+        float(l.get("timestamp", 0) or 0) == 0.0 and float(l.get("end", 0) or 0) == 0.0
+        for l in lines
+    )
+
+
 def align(
     vocal_stem_path: str | Path,
     text: str | None = None,
@@ -76,11 +88,12 @@ def align(
     *,
     lines: list[dict[str, Any]] | None = None,
     words: list[dict[str, Any]] | None = None,
+    duration: float | None = None,
     cfg: LyricsConfig | None = None,
 ) -> dict[str, Any]:
     """Return ``{words: [{word, timestamp, end, confidence}], lines, backend,
     error}`` on the chord timebase. Never raises — falls back to even-split."""
-    from pipeline.lyrics_lookup import words_even_split
+    from pipeline.lyrics_lookup import spread_lines, words_even_split
 
     cfg = cfg or LyricsConfig.from_env()
     vocal_stem_path = Path(vocal_stem_path)
@@ -90,9 +103,15 @@ def align(
     if not native_words:
         return {"words": [], "lines": lines or [], "backend": "none", "error": "empty text"}
 
-    fallback_lines = src_lines or [
-        {"timestamp": 0.0, "end": 0.0, "text": " ".join(native_words)}
-    ]
+    if _lines_lack_timing(src_lines):
+        # Untimed input (plain text, LRCLIB-plain pre-fix cache, ASR fallback):
+        # spread across the song so every downstream consumer — even-split,
+        # karaoke, chord sheet — sees sane times instead of a 0:00 pile-up.
+        src_lines = spread_lines(
+            [l.get("text", "") for l in src_lines] or [" ".join(native_words)],
+            duration,
+        )
+    fallback_lines = src_lines
     if not cfg.alignment_enabled:
         return {"words": words_even_split(fallback_lines), "lines": fallback_lines,
                 "backend": "even-split", "error": "disabled"}

@@ -312,11 +312,38 @@ def transcribe_lyrics(
                 language=lang_hint,
                 lines=lines if lookup_lines is not None else None,
                 words=words or None,
+                duration=duration,
                 cfg=cfg,
             )
             words = aligned.get("words", words)
             if lookup_lines is None:
                 lines = aligned.get("lines", lines)
+            else:
+                # Lookup lines pre-date timing (stale cache, duration unknown
+                # at lookup time): regroup them from the aligned words so
+                # lines, words and the chord sheet share one timebase.
+                from pipeline.alignment import _lines_lack_timing
+
+                if lines and _lines_lack_timing(lines) and words:
+                    lines = _lines_from_words(
+                        [
+                            {
+                                "timestamp": w["timestamp"],
+                                "end": w.get("end", w["timestamp"]),
+                                "word": w.get("word", ""),
+                            }
+                            for w in words
+                        ],
+                        [
+                            {
+                                "timestamp": 0.0,
+                                "end": duration or 0.0,
+                                "text": " ".join(
+                                    w.get("word", "") for w in words
+                                ),
+                            }
+                        ],
+                    )
             models["alignment"] = str(aligned.get("backend", ""))
             if aligned.get("error"):
                 logger.info("alignment note: %s", aligned["error"])
@@ -335,7 +362,8 @@ def transcribe_lyrics(
                 from pipeline.alignment import align as _realign
 
                 re_al = _realign(vocal_path, "\n".join(l["text"] for l in lines),
-                                 language=lang_hint, lines=lines, cfg=cfg)
+                                 language=lang_hint, lines=lines,
+                                 duration=duration, cfg=cfg)
                 words, lines = re_al.get("words", words), re_al.get("lines", lines)
             stages["cleanup"] = round(_time.time() - t0, 2)
 
