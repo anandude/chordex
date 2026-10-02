@@ -55,11 +55,14 @@ export interface AnalysisResult {
 }
 
 export interface JobStatus {
-  status: "queued" | "processing" | "done" | "failed";
+  status: "queued" | "processing" | "done" | "failed" | "cancelled";
   result: AnalysisResult | null;
   error: string | null;
   stage?: string | null;
   progress?: number | null;
+  queue_name?: string | null;
+  queue_position?: number | null;
+  queue_depth?: number | null;
 }
 
 export interface UploadMeta {
@@ -107,4 +110,11 @@ export async function getJobStatus(jobId: string): Promise<JobStatus> {
     throw new Error("Failed to fetch job status");
   }
   return res.json();
+}
+
+export async function cancelJob(jobId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/jobs/${encodeURIComponent(jobId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to cancel job");
 }

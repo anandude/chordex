@@ -58,6 +58,10 @@ stop_all() {
     kill "$(cat "$PID_DIR/worker.pid")" 2>/dev/null || true
     rm -f "$PID_DIR/worker.pid"
   fi
+  if [[ -f "$PID_DIR/worker-lyrics.pid" ]]; then
+    kill "$(cat "$PID_DIR/worker-lyrics.pid")" 2>/dev/null || true
+    rm -f "$PID_DIR/worker-lyrics.pid"
+  fi
   if [[ -f "$PID_DIR/frontend.pid" ]]; then
     # kill process group if possible
     kill "$(cat "$PID_DIR/frontend.pid")" 2>/dev/null || true
@@ -207,7 +211,7 @@ cleanup() {
 trap cleanup INT TERM
 
 # Kill any stale local processes from a previous run
-if [[ -f "$PID_DIR/api.pid" ]] || [[ -f "$PID_DIR/worker.pid" ]] || [[ -f "$PID_DIR/frontend.pid" ]]; then
+if [[ -f "$PID_DIR/api.pid" ]] || [[ -f "$PID_DIR/worker.pid" ]] || [[ -f "$PID_DIR/worker-lyrics.pid" ]] || [[ -f "$PID_DIR/frontend.pid" ]]; then
   warn "Cleaning up previous run…"
   stop_all
   # restart redis if we just killed our container
@@ -234,14 +238,23 @@ info "Starting API (port 8000)…"
 ) >"$LOG_DIR/api.log" 2>&1 &
 echo $! > "$PID_DIR/api.pid"
 
-info "Starting worker…"
+info "Starting chord worker (chord_jobs)…"
 (
   cd "$ROOT/backend"
   # shellcheck disable=SC1091
   source .venv/bin/activate
-  exec python worker.py
+  exec python worker.py chord_jobs
 ) >"$LOG_DIR/worker.log" 2>&1 &
 echo $! > "$PID_DIR/worker.pid"
+
+info "Starting lyrics worker (lyrics_jobs)…"
+(
+  cd "$ROOT/backend"
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+  exec python worker.py lyrics_jobs
+) >"$LOG_DIR/worker-lyrics.log" 2>&1 &
+echo $! > "$PID_DIR/worker-lyrics.pid"
 
 info "Starting frontend (port 3000)…"
 (
@@ -291,15 +304,15 @@ echo -e "  App:     ${CYAN}http://localhost:3000${NC}"
 echo -e "  API:     ${CYAN}http://localhost:8000${NC}"
 echo -e "  Health:  ${CYAN}http://localhost:8000/health${NC}"
 echo
-echo -e "  Logs:    ${YELLOW}.run/logs/{api,worker,frontend}.log${NC}"
+echo -e "  Logs:    ${YELLOW}.run/logs/{api,worker,worker-lyrics,frontend}.log${NC}"
 echo -e "  Stop:    ${YELLOW}Ctrl+C${NC}  or  ${YELLOW}./start.sh --stop${NC}"
 echo
 
 # stream logs (optional) — keep process alive
-tail -n 0 -F "$LOG_DIR/api.log" "$LOG_DIR/worker.log" "$LOG_DIR/frontend.log" 2>/dev/null &
+tail -n 0 -F "$LOG_DIR/api.log" "$LOG_DIR/worker.log" "$LOG_DIR/worker-lyrics.log" "$LOG_DIR/frontend.log" 2>/dev/null &
 TAIL_PID=$!
 
 # wait until any child dies or user hits Ctrl+C
-wait "$(cat "$PID_DIR/api.pid")" "$(cat "$PID_DIR/worker.pid")" "$(cat "$PID_DIR/frontend.pid")" 2>/dev/null || true
+wait "$(cat "$PID_DIR/api.pid")" "$(cat "$PID_DIR/worker.pid")" "$(cat "$PID_DIR/worker-lyrics.pid")" "$(cat "$PID_DIR/frontend.pid")" 2>/dev/null || true
 kill $TAIL_PID 2>/dev/null || true
 stop_all
