@@ -1,0 +1,10 @@
+# STUB — hand annotation pending (see eval/chords/ANNOTATING.md).
+# Song: "Chahun Main Ya Naa" (Aashiqui 2, Hindi film).
+# How to fill in: one "START END HARTE_LABEL" triple per line covering the
+# full song, e.g.
+#   0.000 12.340 N
+#   12.340 15.020 E:min
+#   15.020 17.810 A:min
+# Rules: sharps only (C#, F# — never Db/Gb), N for silence/intro/outro,
+# keep the triad (maj/min/dim/aug/sus) unless the 7th is unambiguous.
+# Delete this header when the annotation is complete.

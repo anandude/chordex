@@ -50,3 +50,6 @@ indic-transliteration==2.3.82
 ai4bharat-transliteration==1.1.3  # needs pydload + indic-nlp-library; xlit path only
 # Tests
 pytest>=8.0.0
+# Chord eval harness (A3, dev-only): MIREX-style scoring of chord sequences.
+# Not imported by the API/worker — score_chords.py loads it lazily.
+mir_eval>=0.7

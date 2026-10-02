@@ -1,0 +1,10 @@
+# ---> Audio + model outputs are local-only, never committed <---
+# Eval audio (copyrighted songs live outside git; fixtures stay in test-assets/)
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+# Generated hypotheses per config run
+hyps/
+__pycache__/
