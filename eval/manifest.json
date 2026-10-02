@@ -1,0 +1,137 @@
+{
+  "_comment": "Phase 0 eval set. Audio files live in eval/songs/ (gitignored) — commit only this manifest. Refs in eval/refs/<song_id>.txt (native script, hand-verified). Fill the 12 slots below with real tracks you own the rights to test on; see eval/results.md for instructions. Coverage requirements from the brief are encoded in the attributes.",
+  "coverage_required": {
+    "hindi": 6,
+    "malayalam": 6,
+    "must_include": [
+      "modern film song with dense production (each language)",
+      "older/sparser recording (each language)",
+      "female-lead vocal (each language)",
+      "male-lead vocal (each language)",
+      "at least two tracks with heavy reverb (across set)",
+      "at least one track with English code-mixing"
+    ]
+  },
+  "songs": [
+    {
+      "song_id": "hi_01",
+      "language": "hi",
+      "title": "TODO — modern Hindi film song, dense production, male-lead",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/hi_01.txt",
+      "attributes": { "era": "modern", "production": "dense", "vocal": "male", "reverb": "normal", "code_mix": false },
+      "status": "pending"
+    },
+    {
+      "song_id": "hi_02",
+      "language": "hi",
+      "title": "TODO — modern Hindi film song, dense production, female-lead",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/hi_02.txt",
+      "attributes": { "era": "modern", "production": "dense", "vocal": "female", "reverb": "normal", "code_mix": false },
+      "status": "pending"
+    },
+    {
+      "song_id": "hi_03",
+      "language": "hi",
+      "title": "TODO — older/sparser Hindi recording, male-lead",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/hi_03.txt",
+      "attributes": { "era": "older", "production": "sparse", "vocal": "male", "reverb": "normal", "code_mix": false },
+      "status": "pending"
+    },
+    {
+      "song_id": "hi_04",
+      "language": "hi",
+      "title": "TODO — older/sparser Hindi recording, female-lead",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/hi_04.txt",
+      "attributes": { "era": "older", "production": "sparse", "vocal": "female", "reverb": "normal", "code_mix": false },
+      "status": "pending"
+    },
+    {
+      "song_id": "hi_05",
+      "language": "hi",
+      "title": "TODO — Hindi, heavy reverb",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/hi_05.txt",
+      "attributes": { "era": "modern", "production": "dense", "vocal": "female", "reverb": "heavy", "code_mix": false },
+      "status": "pending"
+    },
+    {
+      "song_id": "hi_06",
+      "language": "hi",
+      "title": "TODO — Hindi with English code-mixing",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/hi_06.txt",
+      "attributes": { "era": "modern", "production": "dense", "vocal": "male", "reverb": "normal", "code_mix": true },
+      "status": "pending"
+    },
+    {
+      "song_id": "ml_01",
+      "language": "ml",
+      "title": "TODO — modern Malayalam film song, dense production, male-lead",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/ml_01.txt",
+      "attributes": { "era": "modern", "production": "dense", "vocal": "male", "reverb": "normal", "code_mix": false },
+      "status": "pending"
+    },
+    {
+      "song_id": "ml_02",
+      "language": "ml",
+      "title": "TODO — modern Malayalam film song, dense production, female-lead",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/ml_02.txt",
+      "attributes": { "era": "modern", "production": "dense", "vocal": "female", "reverb": "normal", "code_mix": false },
+      "status": "pending"
+    },
+    {
+      "song_id": "ml_03",
+      "language": "ml",
+      "title": "TODO — older/sparser Malayalam recording, male-lead",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/ml_03.txt",
+      "attributes": { "era": "older", "production": "sparse", "vocal": "male", "reverb": "normal", "code_mix": false },
+      "status": "pending"
+    },
+    {
+      "song_id": "ml_04",
+      "language": "ml",
+      "title": "TODO — older/sparser Malayalam recording, female-lead",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/ml_04.txt",
+      "attributes": { "era": "older", "production": "sparse", "vocal": "female", "reverb": "normal", "code_mix": false },
+      "status": "pending"
+    },
+    {
+      "song_id": "ml_05",
+      "language": "ml",
+      "title": "TODO — Malayalam, heavy reverb",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/ml_05.txt",
+      "attributes": { "era": "modern", "production": "sparse", "vocal": "male", "reverb": "heavy", "code_mix": false },
+      "status": "pending"
+    },
+    {
+      "song_id": "ml_06",
+      "language": "ml",
+      "title": "TODO — Malayalam with English code-mixing",
+      "artist": "TODO",
+      "audio": null,
+      "ref": "refs/ml_06.txt",
+      "attributes": { "era": "modern", "production": "dense", "vocal": "female", "reverb": "normal", "code_mix": true },
+      "status": "pending"
+    }
+  ]
+}

@@ -5,12 +5,6 @@ interface Props {
   transposedKey?: string;
 }
 
-function semitoneLabel(n: number): string {
-  if (n === 0) return "Original key";
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${n} semitone${Math.abs(n) !== 1 ? "s" : ""}`;
-}
-
 export default function TransposeControl({
   semitones,
   onChange,
@@ -18,67 +12,47 @@ export default function TransposeControl({
   transposedKey,
 }: Props) {
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
-        <span className="text-white font-medium text-sm">Transpose</span>
-        <span className="text-gray-400 text-sm">{semitoneLabel(semitones)}</span>
+    <div className="flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-2">
+        <span className="font-cl text-[10px] uppercase tracking-[0.2em] text-paper-dim">
+          Key
+        </span>
+        <span className="font-pixel text-sm text-paper">
+          {semitones === 0 ? originalKey ?? "?" : transposedKey ?? "?"}
+        </span>
+        {semitones !== 0 && originalKey && (
+          <span className="font-cl text-[11px] text-paper-dim/85">
+            (was {originalKey})
+          </span>
+        )}
       </div>
 
-      {(originalKey || transposedKey) && (
-        <p className="text-xs text-gray-500 mb-3">
-          {originalKey && (
-            <>
-              Detected:{" "}
-              <span className="text-gray-300">{originalKey}</span>
-            </>
-          )}
-          {semitones !== 0 && transposedKey && (
-            <>
-              {" "}
-              → <span className="text-blue-300">{transposedKey}</span>
-            </>
-          )}
-        </p>
-      )}
-
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-1.5">
         <button
+          type="button"
           onClick={() => onChange(Math.max(-11, semitones - 1))}
           disabled={semitones <= -11}
           aria-label="Transpose down one semitone"
-          className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-800 text-white font-bold text-lg hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          className="w-8 h-8 flex items-center justify-center bg-paper text-ink border-2 border-black shadow-hard-sm font-pixel text-lg leading-none pb-0.5 hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:opacity-30 disabled:cursor-not-allowed transition-transform"
         >
           −
         </button>
-
-        <input
-          type="range"
-          min={-11}
-          max={11}
-          value={semitones}
-          onChange={(e) => onChange(Number(e.target.value))}
-          className="flex-1 accent-blue-500 cursor-pointer"
-          aria-label="Transpose semitones"
-        />
-
+        <span
+          className="font-pixel text-xs text-center w-[4.5rem] py-1.5 bg-ink border-2 border-soot select-none"
+          aria-live="polite"
+        >
+          {semitones === 0 ? "ORIG" : `${semitones > 0 ? "+" : ""}${semitones}`}
+        </span>
         <button
+          type="button"
           onClick={() => onChange(Math.min(11, semitones + 1))}
           disabled={semitones >= 11}
           aria-label="Transpose up one semitone"
-          className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-800 text-white font-bold text-lg hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          className="w-8 h-8 flex items-center justify-center bg-paper text-ink border-2 border-black shadow-hard-sm font-pixel text-lg leading-none pb-0.5 hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:opacity-30 disabled:cursor-not-allowed transition-transform"
         >
           +
         </button>
       </div>
-
-      {semitones !== 0 && (
-        <button
-          onClick={() => onChange(0)}
-          className="mt-3 text-xs text-gray-500 hover:text-gray-300 underline transition-colors"
-        >
-          Reset to original key
-        </button>
-      )}
     </div>
   );
 }

@@ -17,7 +17,10 @@ services:
       MAX_FILE_SIZE_MB: "20"
       CHORD_ENGINE: auto
       ENABLE_LYRICS: "1"
-      WHISPER_MODEL: tiny
+      WHISPER_MODEL: small
+      LYRICS_SEPARATION_BACKEND: demucs
+      LYRICS_LRCLIB: "1"
+      LYRICS_ALIGNMENT: "1"
     volumes:
       - uploads:/data/uploads
     depends_on:
@@ -31,15 +34,22 @@ services:
       UPLOAD_DIR: /data/uploads
       CHORD_ENGINE: auto
       ENABLE_LYRICS: "1"
-      WHISPER_MODEL: tiny
+      WHISPER_MODEL: small
       WHISPER_DEVICE: cpu
       WHISPER_COMPUTE_TYPE: int8
+      LYRICS_SEPARATION_BACKEND: demucs
+      LYRICS_LRCLIB: "1"
+      LYRICS_ALIGNMENT: "1"
+      LYRICS_LLM_CLEANUP: "0"
+      LYRICS_CACHE_DIR: /data/lyrics_cache
     volumes:
       - uploads:/data/uploads
+      - lyrics_cache:/data/lyrics_cache
     depends_on:
       - redis
     command: python worker.py
 
 volumes:
   uploads:
+  lyrics_cache:
   redis_data:
