@@ -12,6 +12,7 @@ Shared post-processing for chord timelines produced by any engine.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import librosa
@@ -30,11 +31,15 @@ _MINOR_PROFILE = np.array(
 )
 
 
-def estimate_key(y: np.ndarray, sr: int) -> str:
-    """Return e.g. 'G major' or 'A minor' from global chroma correlation."""
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
-    chroma_mean = chroma.mean(axis=1)
-    if np.linalg.norm(chroma_mean) < 1e-8:
+def key_from_chroma(chroma_mean: np.ndarray) -> str:
+    """A2.1: pure-numpy key estimate from a 12-dim mean chroma vector.
+
+    Same Krumhansl–Schmuckler correlation as estimate_key, but over an
+    already-computed chroma (no extra CQT). Lets the template engine do a
+    two-pass decode: key first, then key-conditioned transitions.
+    """
+    chroma_mean = np.asarray(chroma_mean, dtype=float)
+    if chroma_mean.shape != (12,) or np.linalg.norm(chroma_mean) < 1e-8:
         return "unknown"
 
     best_score = -np.inf
@@ -51,14 +56,44 @@ def estimate_key(y: np.ndarray, sr: int) -> str:
     return best_label
 
 
+def estimate_key(y: np.ndarray, sr: int) -> str:
+    """Return e.g. 'G major' or 'A minor' from global chroma correlation."""
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+    return key_from_chroma(chroma.mean(axis=1))
+
+
+def _beat_track_once(y: np.ndarray, sr: int) -> tuple[float, np.ndarray]:
+    """Single `beat_track` call returning (tempo_bpm, beat_times).
+
+    S2: the old code ran `beat_track` twice per song (once for tempo, once
+    for beat times). One call serves both `estimate_tempo` and beat-snapping.
+    """
+    tempo_result, beats = librosa.beat.beat_track(y=y, sr=sr, units="time")
+    tempo = round(float(np.atleast_1d(tempo_result)[0]), 1)
+    return tempo, np.asarray(beats, dtype=float)
+
+
 def estimate_tempo(y: np.ndarray, sr: int) -> float:
-    tempo_result, _ = librosa.beat.beat_track(y=y, sr=sr)
-    return round(float(np.atleast_1d(tempo_result)[0]), 1)
+    tempo, _ = _beat_track_once(y, sr)
+    return tempo
 
 
 def get_beat_times(y: np.ndarray, sr: int) -> np.ndarray:
-    _, beats = librosa.beat.beat_track(y=y, sr=sr, units="time")
-    return np.asarray(beats, dtype=float)
+    _, beats = _beat_track_once(y, sr)
+    return beats
+
+
+def snap_enabled(snap_to_beats: bool | None) -> bool:
+    """Resolve beat-snapping: explicit arg wins, else the SNAP_TO_BEATS env
+    (default on, preserving historical behavior)."""
+    if snap_to_beats is not None:
+        return snap_to_beats
+    return os.getenv("SNAP_TO_BEATS", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def _snap_time(t: float, beats: np.ndarray, max_snap: float = 0.35) -> float:
@@ -188,19 +223,30 @@ def build_result(
     sr: int,
     engine: str,
     min_duration: float = 0.45,
-    snap_to_beats: bool = True,
+    snap_to_beats: bool | None = None,
+    key: str | None = None,
 ) -> dict[str, Any]:
     duration = float(len(y) / sr) if len(y) else 0.0
     events = merge_segments(
         raw_events, min_duration=min_duration, total_duration=duration
     )
 
-    tempo = estimate_tempo(y, sr)
-    key = estimate_key(y, sr)
+    # S2: one beat_track call serves both tempo and beat-snapping.
+    # SNAP_TO_BEATS=0 skips beat tracking entirely (no tempo either) for the
+    # fastest path — the UI renders "—" for BPM in that mode.
+    do_snap = snap_enabled(snap_to_beats)
+    tempo: float | None
+    beats: np.ndarray
+    if do_snap:
+        tempo, beats = _beat_track_once(y, sr)
+    else:
+        tempo, beats = None, np.asarray([], dtype=float)
+    # A2.1: callers doing a two-pass decode (key estimated up front for
+    # key-conditioned transitions) pass it in and skip the redundant CQT.
+    resolved_key = key if key is not None else estimate_key(y, sr)
 
-    if snap_to_beats and events:
+    if do_snap and events:
         try:
-            beats = get_beat_times(y, sr)
             events = beat_snap_events(events, beats)
             # re-apply duration ends
             for i, e in enumerate(events):
@@ -214,7 +260,33 @@ def build_result(
     return {
         "chords": events,
         "tempo": tempo,
-        "key": key,
+        "key": resolved_key,
         "duration": round(duration, 3),
+        "engine": engine,
+    }
+
+
+def build_light_result(
+    raw_events: list[dict[str, Any]],
+    *,
+    duration: float,
+    engine: str,
+    min_duration: float = 0.45,
+) -> dict[str, Any]:
+    """Merge-only result without key/tempo/beat-snapping (S1 fast path).
+
+    Used when the audio was never fully decoded (e.g. CHORD_META=0): no
+    waveform is available, so key estimation, tempo detection and beat
+    snapping are skipped. Callers get chords + duration; tempo is None and
+    key is "unknown" (both already handled by the frontend).
+    """
+    events = merge_segments(
+        raw_events, min_duration=min_duration, total_duration=duration
+    )
+    return {
+        "chords": events,
+        "tempo": None,
+        "key": "unknown",
+        "duration": round(float(duration), 3),
         "engine": engine,
     }

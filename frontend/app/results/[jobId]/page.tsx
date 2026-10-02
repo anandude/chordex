@@ -28,6 +28,7 @@ const PROCESSING_LINES = [
 // model stages matter: a first run in a new language downloads ~1 GB, which
 // used to look like a hang.
 const STAGE_LABELS: Record<string, string> = {
+  chords: "detecting chords",
   fetching_lyrics: "looking for existing lyrics",
   separating: "isolating the vocals",
   downloading_model: "downloading the speech model (first run only)",
@@ -106,7 +107,12 @@ export default function ResultsPage({
     queryFn: () => getJobStatus(jobId),
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      if (status === "done" || status === "failed") return false;
+      if (status === "failed") return false;
+      // S3: chords resolve first — keep polling in the background until the
+      // slow lyrics job also settles, then go quiet.
+      const lyrics = query.state.data?.result?.lyrics_status;
+      if (status === "done" && lyrics !== "pending" && lyrics !== "processing")
+        return false;
       return 2000;
     },
     retry: (failureCount) => failureCount < 5,
@@ -266,7 +272,7 @@ export default function ResultsPage({
               <p className="font-cl text-paper-dim/80 text-xs sm:text-sm mt-5">
                 {data?.stage === "downloading_model"
                   ? "one-off download · later songs in this language start instantly"
-                  : "chords land in ~20–90 s · lyrics with the small model take 1–3 min (a language drops to a bigger model on first run)"}
+                  : "chords land in seconds · lyrics follow when ready (1–3 min with the small model, longer on a first-run language download)"}
               </p>
             </div>
           </div>
@@ -309,7 +315,7 @@ export default function ResultsPage({
               <StatChip
                 icon="/icons/speed.svg"
                 label="bpm"
-                value={`${Math.round(result.tempo) || "—"}`}
+                value={result.tempo != null ? `${Math.round(result.tempo)}` : "—"}
               />
               <StatChip
                 icon="/icons/timer.svg"
@@ -340,6 +346,14 @@ export default function ResultsPage({
               {result.engine && (
                 <span className="font-cl text-paper-dim text-xs sm:text-sm self-center">
                   via {result.engine}
+                </span>
+              )}
+              {/* S3: chords render first; lyrics stream in behind. */}
+              {(result.lyrics_status === "pending" ||
+                result.lyrics_status === "processing") && (
+                <span className="font-cl text-paper-dim text-xs sm:text-sm self-center animate-blink">
+                  lyrics still cooking
+                  {data?.stage ? ` — ${stageLabel(data.stage)}…` : "…"}
                 </span>
               )}
             </div>
