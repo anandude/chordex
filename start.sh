@@ -154,8 +154,18 @@ else
 fi
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
+# Health check without requiring host redis-cli: prefer it when installed,
+# else use the redis-cli bundled inside the image via docker exec.
+redis_ping() {
+  if command -v redis-cli >/dev/null 2>&1; then
+    redis-cli -h 127.0.0.1 -p 6379 ping 2>/dev/null | grep -q PONG
+    return
+  fi
+  docker exec chordex-redis redis-cli ping 2>/dev/null | grep -q PONG
+}
+
 ensure_redis() {
-  if redis-cli -h 127.0.0.1 -p 6379 ping 2>/dev/null | grep -q PONG; then
+  if redis_ping; then
     ok "Redis already running on :6379"
     return
   fi
@@ -165,7 +175,7 @@ ensure_redis() {
   echo "chordex-redis" > "$PID_DIR/redis.container"
   # wait for ready
   for i in $(seq 1 30); do
-    if redis-cli -h 127.0.0.1 -p 6379 ping 2>/dev/null | grep -q PONG; then
+    if redis_ping; then
       ok "Redis ready"
       return
     fi

@@ -28,9 +28,14 @@ faster-whisper>=1.0.0
 # Install CPU-only torch first to avoid the multi-GB CUDA wheel:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
 demucs>=4.0
-# Phase 1 alt backend (Mel-Band / BS-RoFormer vocals). Optional — the pipeline
-# falls back to demucs, then to the raw mix, when absent.
-audio-separator==0.47.0
+# Phase 1 alt backend (Mel-Band / BS-RoFormer vocals). DISABLED 2026-10-02:
+# audio-separator==0.47.0 requires numpy>=2, which conflicts with the pinned
+# numpy==1.26.4 that chord-extractor/vamp needs (ResolutionImpossible on
+# fresh installs). The code already falls back demucs -> mixture when the
+# package is absent, and demucs is the default backend — so fresh setup
+# works without it. Re-enable when pins allow (or install manually with a
+# numpy-2 venv if you need the roformer path).
+# audio-separator==0.47.0
 # Phase 2 metadata tags for LRCLIB lookup (ID3/MP4/FLAC/OGG).
 mutagen==1.47.0
 # Phase 3 HF fine-tunes (adalat-ai, thennal, vasista22) load via transformers.
@@ -47,9 +52,14 @@ uroman==1.3.1.1
 # needs fairseq, which is broken on Python 3.11 (mutable dataclass defaults;
 # attempted 2026-09-14, uninstalled). Retry xlit after a Python upgrade.
 indic-transliteration==2.3.82
-ai4bharat-transliteration==1.1.3  # needs pydload + indic-nlp-library; xlit path only
+# DISABLED 2026-10-02: ai4bharat-transliteration drags fairseq, whose metadata
+# build fails on Python 3.11 (same reason the xlit path is already blocked —
+# see above). Default `indic` backend unaffected; re-enable after a Python
+# upgrade alongside the xlit retry.
+# ai4bharat-transliteration==1.1.3  # needs pydload + indic-nlp-library; xlit path only
 # Tests
 pytest>=8.0.0
 # Chord eval harness (A3, dev-only): MIREX-style scoring of chord sequences.
 # Not imported by the API/worker — score_chords.py loads it lazily.
-mir_eval>=0.7
+# NOTE: targets the mir_eval>=0.8 chord API (frame-sampled label sequences).
+mir_eval>=0.8
