@@ -48,7 +48,9 @@ export default function NowNextBar({
 
   return (
     <div
-      className={`sticky top-0 z-20 -mx-1 px-1 pt-3 pb-2 bg-ink/80 backdrop-blur-sm transition-opacity ${
+      // Sticky playhead header: solid background (not translucent) so pinned
+      // content never visually collides with the sheet scrolling under it.
+      className={`sticky top-0 z-20 -mx-1 px-1 pt-3 pb-2 bg-ink shadow-hard transition-opacity ${
         playing ? "" : "opacity-70"
       }`}
     >

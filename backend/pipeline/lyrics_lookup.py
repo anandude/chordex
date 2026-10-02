@@ -203,7 +203,9 @@ def parse_synced_lyrics(synced: str) -> list[dict[str, Any]]:
 
 def words_even_split(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fallback word timings: distribute words evenly across their line span
-    (replaced by Phase 4 forced alignment when enabled)."""
+    (replaced by Phase 4 forced alignment when enabled). Lines with no timing
+    info (all zeros) must be spread first via spread_lines — never split in
+    place, which crams every word into [0, 0.3]."""
     words: list[dict[str, Any]] = []
     for line in lines:
         tokens = line["text"].split()
@@ -215,6 +217,68 @@ def words_even_split(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
             s = line["timestamp"] + i * per
             words.append({"timestamp": round(s, 3), "end": round(s + per, 3), "word": tok})
     return words
+
+
+def spread_lines(texts: list[str], duration: float | None) -> list[dict[str, Any]]:
+    """Distribute untimed lines evenly across the song duration.
+
+    Used for LRCLIB plain lyrics and every even-split fallback: without this,
+    downstream code sees N lines stacked at [0, 0] (sheet degenerates into
+    detached chord rows, karaoke highlight never moves). Unknown duration →
+    4 s per line starting at 0 (audible, debuggable, never overlapping).
+    """
+    lines: list[dict[str, Any]] = []
+    if duration and duration > 0:
+        per = duration / len(texts)
+        for i, t in enumerate(texts):
+            lines.append({
+                "timestamp": round(i * per, 3),
+                "end": round((i + 1) * per, 3),
+                "text": t,
+            })
+    else:
+        for i, t in enumerate(texts):
+            lines.append({
+                "timestamp": round(i * 4.0, 3),
+                "end": round(i * 4.0 + 4.0, 3),
+                "text": t,
+            })
+    return lines
+
+
+def _ensure_plain_timing(result: dict[str, Any] | None,
+                           duration: float | None) -> dict[str, Any] | None:
+    """Heal cached/fresh plain-lyric rows that pre-date line timing.
+
+    Pre-fix caches store every plain line at [0, duration], which collapses
+    the chord sheet. Re-spread them; synced rows and timed rows pass through
+    untouched. Never raises (returns input on any doubt).
+    """
+    try:
+        if not isinstance(result, dict) or result.get("source") != "lrclib_plain":
+            return result
+        lines = result.get("lines") or []
+        if not lines:
+            return result
+        bad = all(
+            float(l.get("timestamp", 0) or 0) == 0.0 for l in lines
+        ) and len(lines) > 1
+        if bad:
+            result["lines"] = spread_lines(
+                [l.get("text", "") for l in lines], duration
+            )
+            result["lyrics"] = words_even_split(result["lines"])
+    except Exception:
+        pass
+    return result
+
+
+def _plain_lines_even(plain: str, duration: float | None) -> list[dict[str, Any]]:
+    """LRCLIB plain (unsynced) lyrics -> timed lines spread across duration."""
+    texts = [t.strip() for t in (plain or "").splitlines() if t.strip()]
+    if not texts:
+        return []
+    return spread_lines(texts, duration)
 
 
 # ── entry point ───────────────────────────────────────────────────────────
@@ -254,7 +318,7 @@ def lookup_lyrics(
         hit = read_json(cache, max_age_s=cfg.lrclib_cache_ttl_s)
         if hit is not None:
             logger.info("lrclib cache hit title=%r", meta.get("title"))
-            return hit
+            return _ensure_plain_timing(hit, duration)
 
     params = {
         "track_name": meta.get("title"),
@@ -276,11 +340,9 @@ def lookup_lyrics(
 
     t0 = time.time()
     synced = candidate.get("syncedLyrics") or ""
-    lines = parse_synced_lyrics(synced) if synced else [
-        {"timestamp": 0.0, "end": round(duration or 0.0, 3), "text": t}
-        for t in (candidate.get("plainLyrics") or "").splitlines()
-        if t.strip()
-    ]
+    lines = parse_synced_lyrics(synced) if synced else _plain_lines_even(
+        (candidate.get("plainLyrics") or ""), duration
+    )
     # If only an id-level record came back thin, fetch full record by id.
     if not lines and candidate.get("id"):
         full = _get_json(f"{API_BASE}/api/get/{candidate['id']}", {}, cfg)
@@ -308,4 +370,4 @@ def lookup_lyrics(
     from pipeline.cache import write_json
 
     write_json(cache, result)
-    return result
+    return _ensure_plain_timing(result, duration)
