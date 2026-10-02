@@ -95,11 +95,16 @@ class AnalyzeResponse(BaseModel):
 
 
 class StatusResponse(BaseModel):
-    status: Literal["queued", "processing", "done", "failed"]
+    status: Literal["queued", "processing", "done", "failed", "cancelled"]
     result: dict | None = None
     error: str | None = None
     stage: str | None = None  # pipeline progress: separating → … → done
     progress: float | None = None
+    # Queue visibility: which queue the awaited job waits in, 1-indexed
+    # position, and total queued depth (both None when not waiting).
+    queue_name: str | None = None
+    queue_position: int | None = None
+    queue_depth: int | None = None
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse, status_code=202)
@@ -184,6 +189,36 @@ def _fetch_job(rq_id: str) -> Job | None:
         return None
 
 
+def _queue_info(rq_id: str, queue: Queue) -> tuple[str | None, int | None, int | None]:
+    """(queue_name, 1-indexed position, queued depth) for a waiting job.
+
+    Position comes from RQ (None once the job leaves the queue); depth is a
+    best-effort len() so the UI can say "#N of M". Never raises.
+    """
+    job = _fetch_job(rq_id) or _fetch_job(rq_id.split(":")[0])
+    if job is None:
+        return None, None, None
+    try:
+        pos = job.get_position()
+        position = (pos + 1) if pos is not None else None
+    except Exception:
+        position = None
+    try:
+        depth = len(queue)
+    except Exception:
+        depth = None
+    if position is None and (depth is None or depth == 0):
+        return None, None, None
+    return queue.name, position, depth
+
+
+def _is_cancelled(job_id: str) -> bool:
+    try:
+        return bool(_redis_kv.get(f"cancelled:{job_id}"))
+    except Exception:
+        return False
+
+
 def _lyrics_state(job_id: str) -> tuple[str, str | None]:
     """Resolve (lyrics_status, lyrics_error) once chords are cached.
 
@@ -232,7 +267,14 @@ async def get_status(job_id: str):
             result["lyrics_status"] = state
             if state == "failed" and error and not result.get("lyrics_error"):
                 result["lyrics_error"] = error
-        return StatusResponse(status="done", result=result)
+        resp = StatusResponse(status="done", result=result)
+        if result.get("lyrics_status") in ("pending", "processing"):
+            qn, qp, qd = _queue_info(f"{job_id}:lyrics", _lyrics_queue)
+            resp.queue_name, resp.queue_position, resp.queue_depth = qn, qp, qd
+        return resp
+
+    if _is_cancelled(job_id):
+        return StatusResponse(status="cancelled")
 
     # Chords not cached yet — inspect the chord job (plus a legacy fallback
     # for jobs enqueued before the S3 split, which used the bare job_id).
@@ -241,11 +283,15 @@ async def get_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found.")
 
     if job.is_queued:
-        return StatusResponse(status="queued")
+        qn, qp, qd = _queue_info(f"{job_id}:chords", _chord_queue)
+        return StatusResponse(status="queued", queue_name=qn,
+                              queue_position=qp, queue_depth=qd)
     if job.is_started:
         stage, pct = _job_progress(job_id)
+        qn, qp, qd = _queue_info(f"{job_id}:chords", _chord_queue)
         return StatusResponse(status="processing", stage=stage or "processing",
-                              progress=pct)
+                              progress=pct, queue_name=qn,
+                              queue_position=qp, queue_depth=qd)
     if job.is_failed:
         error_msg = "Job failed without a traceback."
         if job.exc_info:
@@ -262,6 +308,32 @@ async def get_status(job_id: str):
         return StatusResponse(status="done", result=None)
 
     return StatusResponse(status="queued")
+
+
+@app.delete("/api/jobs/{job_id}", status_code=202)
+async def cancel_job(job_id: str):
+    """Cancel a queued/processing job.
+
+    Dequeues both RQ jobs (a running horse finishes harmlessly — its output
+    is ignored once the cancelled marker is set), drops cached partials, and
+    records the marker so GET /api/status reports "cancelled" instead of
+    resurrecting the job from a late write.
+    """
+    for rq_id in (f"{job_id}:chords", f"{job_id}:lyrics", job_id):
+        try:
+            job = _fetch_job(rq_id)
+            if job is not None:
+                job.cancel()
+        except Exception:
+            pass
+    try:
+        pipe = _redis_kv.pipeline()
+        pipe.delete(f"result:{job_id}", f"lyrics:{job_id}", f"progress:{job_id}")
+        pipe.setex(f"cancelled:{job_id}", _RESULT_TTL, "1")
+        pipe.execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Cancel failed: {exc}") from exc
+    return {"job_id": job_id, "status": "cancelled"}
 
 
 @app.get("/api/audio/{job_id}")

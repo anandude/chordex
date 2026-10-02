@@ -4,7 +4,7 @@ import { use, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import Image from "next/image";
-import { audioUrl, getJobStatus } from "@/lib/api";
+import { audioUrl, cancelJob, getJobStatus } from "@/lib/api";
 import { transposeKeyLabel, transposeProgression } from "@/lib/transpose";
 import { applyEasyMode } from "@/lib/easyChords";
 import { activeChordIndex } from "@/lib/chordSheet";
@@ -41,6 +41,10 @@ const STAGE_LABELS: Record<string, string> = {
 
 function stageLabel(stage: string): string {
   return STAGE_LABELS[stage] ?? stage.replace(/_/g, " ");
+}
+
+function queueLabel(queueName: string): string {
+  return queueName.replace(/_jobs$/, "").replace(/_/g, " ");
 }
 
 function formatProgression(
@@ -102,12 +106,12 @@ export default function ResultsPage({
   const [statusLine, setStatusLine] = useState(0);
   const [script, setScript] = useState<"native" | "roman" | "both">("native");
 
-  const { data, error } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: ["job", jobId],
     queryFn: () => getJobStatus(jobId),
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      if (status === "failed") return false;
+      if (status === "failed" || status === "cancelled") return false;
       // S3: chords resolve first — keep polling in the background until the
       // slow lyrics job also settles, then go quiet.
       const lyrics = query.state.data?.result?.lyrics_status;
@@ -122,6 +126,20 @@ export default function ResultsPage({
   const isLoading =
     !data || data.status === "queued" || data.status === "processing";
   const failed = Boolean(error) || data?.status === "failed";
+  const cancelled = data?.status === "cancelled";
+  const [cancelling, setCancelling] = useState(false);
+
+  const handleCancel = async () => {
+    setCancelling(true);
+    try {
+      await cancelJob(jobId);
+      await refetch();
+    } catch {
+      /* next poll shows the truth */
+    } finally {
+      setCancelling(false);
+    }
+  };
   const progressPct =
     typeof data?.progress === "number"
       ? Math.round(Math.min(Math.max(data.progress, 0), 1) * 100)
@@ -274,6 +292,29 @@ export default function ResultsPage({
                   ? "one-off download · later songs in this language start instantly"
                   : "chords land in seconds · lyrics follow when ready (1–3 min with the small model, longer on a first-run language download)"}
               </p>
+              {data?.status === "queued" &&
+                (data.queue_position != null || data.queue_depth != null) && (
+                  <p className="font-pixel text-gold text-xs sm:text-sm mt-3">
+                    #{data.queue_position ?? "?"} in line
+                    {data.queue_name
+                      ? ` · ${queueLabel(data.queue_name)} queue`
+                      : ""}
+                    {data.queue_depth != null && data.queue_depth > 1
+                      ? ` · ${data.queue_depth} waiting`
+                      : ""}
+                  </p>
+                )}
+              {(data?.status === "queued" ||
+                data?.status === "processing") && (
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  disabled={cancelling}
+                  className="mt-5 min-h-9 inline-flex items-center justify-center font-pixel text-xs px-4 py-2 bg-transparent text-paper-dim border-2 border-soot hover:text-paper hover:border-paper-dim disabled:opacity-50 transition-colors"
+                >
+                  {cancelling ? "CANCELLING…" : "CANCEL JOB"}
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -302,6 +343,26 @@ export default function ResultsPage({
           </div>
         )}
 
+        {/* Cancelled state */}
+        {cancelled && !failed && (
+          <div
+            role="status"
+            className="p-5 sm:p-6 bg-coal border-2 border-black shadow-hard text-paper"
+          >
+            <p className="font-pixel text-lg sm:text-xl mb-2.5">
+              JOB CANCELLED
+            </p>
+            <p className="font-cl text-sm sm:text-base text-paper-dim mb-4">
+              This analysis was stopped. Upload again whenever ready.
+            </p>
+            <Link
+              href="/"
+              className="inline-flex items-center gap-2 min-h-11 bg-paper text-ink border-2 border-black shadow-hard-sm px-3.5 py-2 font-pixel text-xs hover:-translate-y-0.5 transition-transform"
+            >
+              ANALYZE ANOTHER FILE
+            </Link>
+          </div>
+        )}
         {/* Results */}
         {data?.status === "done" && result && (
           <div className="space-y-4 sm:space-y-5">
