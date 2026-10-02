@@ -158,19 +158,38 @@ def load_hyp(path: Path) -> tuple[np.ndarray, list[str]]:
 
 
 def _as_float(value) -> float:
+    import numpy as _np
+
     if isinstance(value, (tuple, list)):
         value = value[0]
-    return float(value)
+    return float(_np.mean(value))
+
+
+_SCORE_FPS = 10.0
+
+
+def _sample_labels(intervals: np.ndarray, labels: list[str],
+                   times: np.ndarray) -> list[str]:
+    """Label active at each time point (right-continuous intervals)."""
+    idx = np.clip(
+        np.searchsorted(intervals[:, 1], times, side="right"), 0, len(labels) - 1
+    )
+    return [labels[i] for i in idx]
 
 
 def score_pair(ref_iv: np.ndarray, ref_lb: list[str],
                est_iv: np.ndarray, est_lb: list[str]) -> dict:
-    """mir_eval chord scores for one song. Raises ImportError if mir_eval is missing."""
+    """mir_eval chord scores for one song. Raises ImportError if mir_eval is missing.
+
+    Targets the mir_eval>=0.8 API: vocabulary metrics compare frame-sampled
+    label sequences (10 Hz over the reference duration); seg() takes boundary
+    intervals and returns a single F score.
+    """
     try:
         import mir_eval.chord as _chord
     except ImportError as exc:
         raise ImportError(
-            "mir_eval is required for scoring (pip install mir_eval). "
+            "mir_eval is required for scoring (pip install 'mir_eval>=0.8'). "
             "Label mapping can still be tested with --self-test."
         ) from exc
 
@@ -181,23 +200,34 @@ def score_pair(ref_iv: np.ndarray, ref_lb: list[str],
     keep = est_iv[:, 1] > est_iv[:, 0]
     est_iv, est_lb = est_iv[keep], [est_lb[i] for i in np.nonzero(keep)[0]]
 
+    invalid = set()
+    for lab in list(ref_lb) + list(est_lb):
+        try:
+            _chord.validate_chord_label(lab)
+        except Exception:
+            invalid.add(lab)
+
+    n_frames = max(1, int(round(ref_end * _SCORE_FPS)))
+    times = (np.arange(n_frames) + 0.5) / _SCORE_FPS
+    ref_seq = _sample_labels(np.asarray(ref_iv, dtype=float), ref_lb, times)
+    est_seq = _sample_labels(est_iv, est_lb, times)
+
     out: dict = {}
     for name in METRICS:
         fn = getattr(_chord, name)
         try:
-            out[name] = round(_as_float(fn(ref_iv, ref_lb, est_iv, est_lb)), 4)
+            out[name] = round(_as_float(fn(ref_seq, est_seq)), 4)
         except Exception as exc:
             out[name] = f"ERROR: {exc}"
     try:
-        seg = _chord.seg(ref_iv, est_iv)
-        p, r, f = (float(v) for v in seg[:3])
-        out["seg_p"], out["seg_r"], out["seg_f"] = round(p, 4), round(r, 4), round(f, 4)
+        out["seg_f"] = round(float(_chord.seg(ref_iv, est_iv)), 4)
     except Exception as exc:
-        out["seg_p"] = out["seg_r"] = out["seg_f"] = f"ERROR: {exc}"
+        out["seg_f"] = f"ERROR: {exc}"
     # Diagnostics: how much audio the engine left as no-chord, and how jumpy.
     n_dur = sum(e - s for (s, e), l in zip(est_iv, est_lb) if l == "N")
     out["n_frac"] = round(float(n_dur) / ref_end, 4) if ref_end > 0 else 0.0
     out["n_segments"] = len(est_lb)
+    out["invalid_labels"] = sorted(invalid)
     return out
 
 
@@ -300,9 +330,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{song['id']}: " + " ".join(
             f"{m}={row[m]}" for m in METRICS + ["seg_f"]))
     if rows:
+        # Means skip ERROR strings (a broken metric must not abort the batch).
+        def _mean(m: str) -> str:
+            vals = [r[m] for r in rows if isinstance(r[m], (int, float))]
+            if not vals:
+                return "n/a"
+            return str(round(float(np.mean(vals)), 4))
+
         print(f"\nmeans over {len(rows)} songs: " + " ".join(
-            f"{m}={round(float(np.mean([r[m] for r in rows])), 4)}"
-            for m in METRICS + ["seg_f"]))
+            f"{m}={_mean(m)}" for m in METRICS + ["seg_f"]))
     return 0
 
 

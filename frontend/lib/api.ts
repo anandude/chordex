@@ -35,8 +35,8 @@ export interface EasyModeResult {
 
 export interface AnalysisResult {
   chords: ChordEvent[];
-  // Null when beat tracking is skipped (SNAP_TO_BEATS=0) or the fast
-  // metadata-only path is used (CHORD_META=0) — UI renders "—".
+  // Null (beat tracking skipped) or 0 (no beats found, e.g. drones or
+  // pure-tone fixtures) — UI renders "—" for both.
   tempo: number | null;
   key?: string;
   duration?: number;

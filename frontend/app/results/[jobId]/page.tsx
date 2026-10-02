@@ -315,7 +315,11 @@ export default function ResultsPage({
               <StatChip
                 icon="/icons/speed.svg"
                 label="bpm"
-                value={result.tempo != null ? `${Math.round(result.tempo)}` : "—"}
+                value={
+                  result.tempo != null && result.tempo > 0
+                    ? `${Math.round(result.tempo)}`
+                    : "—"
+                }
               />
               <StatChip
                 icon="/icons/timer.svg"
