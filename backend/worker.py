@@ -18,6 +18,10 @@ from rq import Queue, Worker
 
 import storage
 
+# Side-effect import: keeps huggingface_hub off the xet transfer backend (which
+# stalls on some networks) before any job loads a model — pipeline/hf_setup.py.
+from pipeline import hf_setup  # noqa: F401
+
 load_dotenv()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")

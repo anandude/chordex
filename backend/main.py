@@ -57,6 +57,24 @@ _MAX_BYTES = int(os.getenv("MAX_FILE_SIZE_MB", "20")) * 1024 * 1024
 _ALLOWED_EXTS = {"mp3", "wav", "ogg", "flac", "m4a"}
 _RESULT_TTL = 3600  # 1 hour
 _URI_TTL = 3600
+_DEFAULT_JOB_TIMEOUT_S = 7200  # 2 h — CPU separation + ASR, plus a one-off
+#                               model download on an uncached language
+
+
+def _job_timeout() -> int:
+    """RQ job timeout in seconds (``JOB_TIMEOUT_S``).
+
+    RQ hard-kills a job once it exceeds its timeout (it SIGKILLs the work horse
+    at ``timeout + 60 s``), which used to fail any first run for hi/ml: the
+    per-language ASR fine-tune (~1 GB) was still downloading when the old
+    1800 s deadline passed, so the job died reporting "Work-horse terminated
+    unexpectedly; waitpid returned None". Long by design; per-stage progress is
+    published to ``progress:{job_id}`` while the job runs.
+    """
+    try:
+        return int(os.getenv("JOB_TIMEOUT_S", str(_DEFAULT_JOB_TIMEOUT_S)))
+    except ValueError:
+        return _DEFAULT_JOB_TIMEOUT_S
 
 
 class AnalyzeResponse(BaseModel):
@@ -121,7 +139,7 @@ async def analyze(
         args=(uri,),
         kwargs={"language": lang, **{k: v for k, v in meta.items() if v}},
         job_id=job_id,
-        job_timeout=1800,  # separation + Indic models are slow on CPU
+        job_timeout=_job_timeout(),
     )
 
     return AnalyzeResponse(job_id=job_id)

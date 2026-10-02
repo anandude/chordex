@@ -1,7 +1,7 @@
 "use client";
 
 import { ChordEvent } from "@/lib/api";
-import { chordType } from "@/lib/chordStyle";
+import { chordTextClass } from "@/lib/chordStyle";
 
 interface Props {
   chords: ChordEvent[];
@@ -12,6 +12,11 @@ interface Props {
 }
 
 const PROGRESS_BLOCKS = 14;
+
+/** "N" is the engine's no-chord marker — never show it to the player. */
+function chordLabel(chord: string): string {
+  return chord === "N" ? "—" : chord;
+}
 
 export default function NowNextBar({
   chords,
@@ -52,7 +57,7 @@ export default function NowNextBar({
         <button
           type="button"
           onClick={() => onSeek?.(nowStart)}
-          aria-label={`Current chord ${now.chord}. Restart it.`}
+          aria-label={`Current chord ${chordLabel(now.chord)}. Restart it.`}
           className={[
             "text-left border-2 border-black px-3 py-2.5 sm:px-5 sm:py-3 transition-all",
             nowActive
@@ -60,7 +65,11 @@ export default function NowNextBar({
               : "bg-paper text-ink shadow-hard-sm hover:-translate-y-0.5",
           ].join(" ")}
         >
-          <p className="font-cl text-[10px] sm:text-xs uppercase tracking-[0.2em] opacity-60 mb-0.5">
+          <p
+            className={`font-cl text-[11px] sm:text-xs uppercase tracking-[0.2em] mb-1 ${
+              nowActive ? "text-ink/70" : "text-ink/60"
+            }`}
+          >
             {hasActive ? (nowActive ? "▶ Now" : "Now") : "Up first"}
           </p>
           <p
@@ -69,7 +78,7 @@ export default function NowNextBar({
               now.chord.length > 5 ? "text-3xl sm:text-5xl" : "text-4xl sm:text-6xl"
             }`}
           >
-            {now.chord}
+            {chordLabel(now.chord)}
           </p>
           {/* segmented progress through the chord */}
           <div className="flex gap-[3px] mt-2" aria-hidden>
@@ -100,20 +109,20 @@ export default function NowNextBar({
           <button
             type="button"
             onClick={() => onSeek?.(next.timestamp)}
-            aria-label={`Next chord ${next.chord}. Jump to it.`}
+            aria-label={`Next chord ${chordLabel(next.chord)}. Jump to it.`}
             className="text-right border-2 border-black bg-coal px-3 py-2.5 sm:px-5 sm:py-3 text-paper shadow-hard-sm hover:-translate-y-0.5 transition-all"
           >
-            <p className="font-cl text-[10px] sm:text-xs uppercase tracking-[0.2em] text-paper-dim mb-0.5">
+            <p className="font-cl text-[11px] sm:text-xs uppercase tracking-[0.2em] text-paper-dim mb-1">
               Next
             </p>
             <p
               className={`font-pixel leading-none ${
                 next.chord.length > 5 ? "text-2xl sm:text-4xl" : "text-3xl sm:text-5xl"
-              } ${chordType(next.chord) === "ext" ? "text-gold" : ""}`}
+              } ${chordTextClass(next.chord)}`}
             >
-              {next.chord}
+              {chordLabel(next.chord)}
             </p>
-            <p className="font-pixel text-[11px] sm:text-xs text-paper-dim mt-2">
+            <p className="font-pixel text-xs sm:text-sm text-paper-dim mt-2">
               {nextIn != null && nextIn > 0.05 && nextIn <= 5
                 ? `IN ${nextIn.toFixed(1)}S`
                 : "\u00A0"}
@@ -121,13 +130,13 @@ export default function NowNextBar({
           </button>
         ) : (
           <div className="text-right border-2 border-black bg-coal px-3 py-2.5 sm:px-5 sm:py-3 text-paper shadow-hard-sm">
-            <p className="font-cl text-[10px] sm:text-xs uppercase tracking-[0.2em] text-paper-dim mb-0.5">
+            <p className="font-cl text-[11px] sm:text-xs uppercase tracking-[0.2em] text-paper-dim mb-1">
               Next
             </p>
             <p className="font-pixel text-3xl sm:text-5xl leading-none text-paper-dim/70">
               —
             </p>
-            <p className="text-[10px] sm:text-xs mt-2 font-pixel text-transparent">
+            <p className="text-xs sm:text-sm mt-2 font-pixel text-transparent">
               {"\u00A0"}
             </p>
           </div>

@@ -5,6 +5,7 @@ bare checkout (demucs/audio-separator/transformers/aligner NOT required).
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -131,6 +132,114 @@ def test_chunk_spans_and_seam_dedupe():
     assert deduped[-1]["word"] == "end"
 
 
+# ── HF download plumbing ──────────────────────────────────────────────────
+
+def test_xet_is_disabled_unless_explicitly_opted_in(monkeypatch):
+    """hf-xet 1.5.x stalls on some networks (measured here: 17 KB written in
+    40 s, vs 20 MB in 40 s without it). A stalled transfer never raises — it
+    just never finishes, which made a first-run ASR job look hung until RQ
+    killed it at job_timeout + 60 s."""
+    from pipeline import hf_setup
+
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+    assert hf_setup.disable_xet() is True
+    assert os.environ["HF_HUB_DISABLE_XET"] == "1"
+
+    monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")  # opt back in after an upgrade
+    assert hf_setup.disable_xet() is False
+    assert os.environ["HF_HUB_DISABLE_XET"] == "0"
+
+
+def test_repo_cache_state_flags_partial_downloads(tmp_path, monkeypatch):
+    """A killed download leaves config.json + a `*.incomplete` blob behind, and
+    `snapshot_download(local_files_only=True)` still reports success for that
+    state — which made prewarm think the big models were already cached."""
+    from pipeline import hf_setup
+
+    monkeypatch.setattr(hf_setup, "hf_cache_dir", lambda: tmp_path)
+    repo_id = "adalat-ai/whisper-medium-hi-high-lr"
+    repo = tmp_path / ("models--" + repo_id.replace("/", "--"))
+    (repo / "blobs").mkdir(parents=True)
+    (repo / "snapshots" / "rev").mkdir(parents=True)
+    (repo / "blobs" / "etag.1234.incomplete").write_bytes(b"x" * 100)
+    assert hf_setup.repo_cache_state(repo_id) == (False, 100.0)
+
+    (repo / "blobs" / "etag.1234.incomplete").unlink()
+    (repo / "blobs" / "etag").write_bytes(b"y" * 2000)
+    (repo / "snapshots" / "rev" / "model.safetensors").write_bytes(b"y" * 2000)
+    assert hf_setup.repo_cache_state(repo_id) == (True, 2000.0)
+
+    assert hf_setup.repo_cache_state("nobody/nothing") == (False, 0.0)
+
+
+def test_asr_announces_download_vs_load(monkeypatch):
+    from pipeline import asr
+
+    events: list[tuple[str, float]] = []
+    monkeypatch.setattr(asr, "repo_cache_state", lambda repo: (False, 0.0))
+    asr._announce_model("adalat-ai/whisper-medium-hi-high-lr",
+                        lambda stage, pct: events.append((stage, pct)))
+    assert events and events[-1][0] == "downloading_model"
+
+    events.clear()
+    monkeypatch.setattr(asr, "repo_cache_state", lambda repo: (True, 1.5e9))
+    asr._announce_model("adalat-ai/whisper-medium-hi-high-lr",
+                        lambda stage, pct: events.append((stage, pct)))
+    assert events and events[-1][0] == "loading_model"
+
+    # stock CTranslate2 names resolve to the repo faster-whisper itself uses
+    assert asr.fw_repo("small") == "Systran/faster-whisper-small"
+    assert asr.fw_repo("org/model") == "org/model"
+
+
+def test_transcribe_asr_reports_model_and_chunk_progress(tmp_path, monkeypatch):
+    from pipeline import asr
+    from pipeline.config import LyricsConfig
+
+    monkeypatch.setattr(asr, "repo_cache_state", lambda repo: (True, 1.0))
+    monkeypatch.setattr(asr, "_audible_spans",
+                        lambda *a, **k: [(0.0, 12.0), (12.0, 24.0)])
+
+    def fake_hf(path, lang, spans, model, cfg, on_chunk=None):
+        for i in range(len(spans)):
+            on_chunk(i + 1)
+        return (
+            [{"timestamp": 0.0, "end": 1.0, "word": "la"}],
+            [{"timestamp": 0.0, "end": 1.0, "text": "la"}],
+            "hi",
+        )
+
+    monkeypatch.setattr(asr, "_transcribe_hf", fake_hf)
+    events: list[tuple[str, float]] = []
+    out = asr.transcribe_asr(
+        tmp_path / "vocals.wav", language="hi",
+        cfg=LyricsConfig(whisper_model="small", cache_dir=str(tmp_path)),
+        progress=lambda stage, pct: events.append((stage, pct)),
+    )
+
+    assert [s for s, _ in events] == ["loading_model", "transcribing",
+                                      "transcribing", "transcribing"]
+    assert events[-1][1] == 0.78  # hands the 0.8 alignment band back on time
+    assert out["model"] == "adalat-ai/whisper-medium-hi-high-lr"
+    assert out["lines"][0]["text"] == "la"
+
+
+def test_job_timeout_covers_first_run_downloads(monkeypatch):
+    """RQ SIGKILLs the work horse once a job runs past job_timeout + 60 s. The
+    old 1800 s deadline meant every first run in a new language died mid
+    model-download with "Work-horse terminated unexpectedly"."""
+    import main
+
+    monkeypatch.delenv("JOB_TIMEOUT_S", raising=False)
+    assert main._job_timeout() == 7200
+
+    monkeypatch.setenv("JOB_TIMEOUT_S", "3600")
+    assert main._job_timeout() == 3600
+
+    monkeypatch.setenv("JOB_TIMEOUT_S", "not-a-number")
+    assert main._job_timeout() == 7200
+
+
 # ── Phase 1: separation fallbacks ─────────────────────────────────────────
 
 def test_separation_backend_none_passthrough(tmp_path):
@@ -166,6 +275,41 @@ def test_separation_cache_hit(tmp_path):
                                  "htdemucs_ft", "dereverb=0", ext=".wav")
     hit.write_bytes(b"cached-stem")
     assert separate_vocals(f, cfg=cfg) == hit
+
+
+def test_analysis_never_deletes_the_upload(tmp_path, monkeypatch):
+    """Regression: separate_vocals returns the ORIGINAL upload (as a Path) on
+    every fallback. The cleanup compared that Path against the str file_path,
+    always read as "owned", and unlinked the uploaded audio when the job
+    finished — so /api/audio/{job} 404'd and the player showed
+    "Could not load audio"."""
+    import lyrics_transcriber as lt
+    from pipeline import asr, lyrics_lookup
+
+    monkeypatch.setenv("ENABLE_LYRICS", "1")
+    monkeypatch.setenv("LYRICS_SEPARATION_BACKEND", "none")
+    monkeypatch.setenv("LYRICS_ALIGNMENT", "0")
+    monkeypatch.setenv("LYRICS_LRCLIB", "0")
+    monkeypatch.setattr(lyrics_lookup, "get_metadata", lambda *a, **k: {})
+    monkeypatch.setattr(lyrics_lookup, "lookup_lyrics", lambda *a, **k: None)
+    monkeypatch.setattr(
+        asr,
+        "transcribe_asr",
+        lambda *a, **k: {
+            "lyrics": [{"timestamp": 0.0, "end": 1.0, "word": "la"}],
+            "lines": [{"timestamp": 0.0, "end": 1.0, "text": "la"}],
+            "language": "en",
+            "model": "stub",
+        },
+    )
+
+    upload = tmp_path / "audio.wav"
+    upload.write_bytes(b"fake-audio")
+    out = lt.transcribe_lyrics(str(upload), language="en")
+
+    assert out["source"] == "asr"
+    assert out["lines"][0]["text"] == "la"
+    assert upload.exists(), "the uploaded audio must survive analysis"
 
 
 def test_roformer_checkpoint_resolution_offline():

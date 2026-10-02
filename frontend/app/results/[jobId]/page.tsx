@@ -24,6 +24,24 @@ const PROCESSING_LINES = [
   "almost there…",
 ];
 
+// Stage ids published by the worker (progress:{job_id}) → readable labels. The
+// model stages matter: a first run in a new language downloads ~1 GB, which
+// used to look like a hang.
+const STAGE_LABELS: Record<string, string> = {
+  fetching_lyrics: "looking for existing lyrics",
+  separating: "isolating the vocals",
+  downloading_model: "downloading the speech model (first run only)",
+  loading_model: "loading the speech model",
+  transcribing: "transcribing the vocals",
+  aligning: "aligning words to the audio",
+  cleaning: "cleaning up the lyrics",
+  done: "wrapping up",
+};
+
+function stageLabel(stage: string): string {
+  return STAGE_LABELS[stage] ?? stage.replace(/_/g, " ");
+}
+
 function formatProgression(
   chords: Array<{ timestamp: number; chord: string }>,
   opts?: { capo?: number; easy?: boolean }
@@ -58,12 +76,12 @@ function StatChip({
   value: string;
 }) {
   return (
-    <span className="inline-flex items-center gap-2 bg-coal border-2 border-black shadow-hard-sm px-2.5 py-1.5">
-      <Image src={icon} alt="" width={18} height={18} className="w-[18px] h-[18px]" />
+    <span className="inline-flex items-center gap-2.5 bg-coal border-2 border-black shadow-hard-sm px-3 py-2">
+      <Image src={icon} alt="" width={20} height={20} className="w-5 h-5" />
       <span className="font-cl text-paper-dim text-xs uppercase tracking-wider">
         {label}
       </span>
-      <span className="font-pixel text-paper text-sm">{value}</span>
+      <span className="font-pixel text-paper text-base">{value}</span>
     </span>
   );
 }
@@ -97,6 +115,11 @@ export default function ResultsPage({
 
   const isLoading =
     !data || data.status === "queued" || data.status === "processing";
+  const failed = Boolean(error) || data?.status === "failed";
+  const progressPct =
+    typeof data?.progress === "number"
+      ? Math.round(Math.min(Math.max(data.progress, 0), 1) * 100)
+      : null;
 
   useEffect(() => {
     if (!isLoading) return;
@@ -107,27 +130,29 @@ export default function ResultsPage({
     return () => clearInterval(t);
   }, [isLoading]);
 
+  // hoisted from the response so the memo deps stay exact
+  const resultChords = data?.result?.chords;
+  const resultKey = data?.result?.key;
+
   // 1) optional user transpose on original chords
   const transposedOriginal = useMemo(
     () =>
-      data?.result?.chords
-        ? transposeProgression(data.result.chords, semitones)
-        : [],
-    [data?.result?.chords, semitones]
+      resultChords ? transposeProgression(resultChords, semitones) : [],
+    [resultChords, semitones]
   );
 
   // 2) easy mode from transposed
   const easy = useMemo(() => {
     if (!transposedOriginal.length) return null;
-    const key = data?.result?.key
-      ? transposeKeyLabel(data.result.key, semitones)
+    const key = resultKey
+      ? transposeKeyLabel(resultKey, semitones)
       : undefined;
     return applyEasyMode(transposedOriginal, key);
-  }, [transposedOriginal, data?.result?.key, semitones]);
+  }, [transposedOriginal, resultKey, semitones]);
 
   const displayChords = easyMode && easy ? easy.chords : transposedOriginal;
 
-  const originalKey = data?.result?.key;
+  const originalKey = resultKey;
   const transposedKey = originalKey
     ? transposeKeyLabel(originalKey, semitones)
     : undefined;
@@ -173,14 +198,14 @@ export default function ResultsPage({
         <header className="flex items-center justify-between gap-4 mb-5">
           <Link
             href="/"
-            className="inline-flex items-center gap-2 font-cl text-paper-dim text-sm hover:text-paper transition-colors"
+            className="inline-flex items-center gap-2.5 min-h-11 bg-coal border-2 border-black shadow-hard-sm px-3.5 py-2 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
           >
             <Image
               src="/icons/upload.svg"
               alt=""
-              width={18}
-              height={18}
-              className="w-[18px] h-[18px]"
+              width={20}
+              height={20}
+              className="w-5 h-5"
             />
             new song
           </Link>
@@ -189,12 +214,12 @@ export default function ResultsPage({
             alt="ChordLens"
             width={140}
             height={93}
-            className="w-28 sm:w-32 h-auto"
+            className="w-28 sm:w-36 h-auto"
           />
         </header>
 
         {/* Processing state */}
-        {isLoading && (
+        {isLoading && !failed && (
           <div className="flex flex-col items-center justify-center py-24 gap-7 animate-pop">
             <div className="flex items-end gap-2 h-16" aria-hidden>
               {[0, 1, 2, 3, 4, 5, 6].map((i) => (
@@ -208,45 +233,74 @@ export default function ResultsPage({
                 />
               ))}
             </div>
-            <div className="text-center">
+            <div className="text-center w-full max-w-md">
               <p className="font-pixel text-paper text-xl sm:text-2xl tracking-wide">
                 {data?.status === "processing" ? "ANALYZING…" : "QUEUED…"}
               </p>
-              <p className="font-cl text-paper-dim text-sm mt-2 animate-blink">
+              <p className="font-cl text-paper-dim text-sm sm:text-base mt-2.5 animate-blink">
                 {data?.stage
-                  ? data.stage.replace(/_/g, " ") + "…"
+                  ? stageLabel(data.stage) + "…"
                   : PROCESSING_LINES[statusLine]}
               </p>
-              <p className="font-cl text-paper-dim/80 text-xs mt-4 max-w-sm mx-auto">
-                chords land in ~20–90 s · lyrics with the small model take
-                1–3 min (Malayalam uses a bigger model and can take longer on
-                first run)
+
+              {progressPct !== null && (
+                <div className="mt-5">
+                  <div
+                    className="h-3 bg-soot border-2 border-black"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={progressPct}
+                  >
+                    <div
+                      className="h-full bg-mint transition-[width] duration-700"
+                      style={{ width: `${progressPct}%` }}
+                    />
+                  </div>
+                  <p className="font-pixel text-paper-dim text-xs mt-2.5">
+                    {progressPct}%
+                  </p>
+                </div>
+              )}
+
+              <p className="font-cl text-paper-dim/80 text-xs sm:text-sm mt-5">
+                {data?.stage === "downloading_model"
+                  ? "one-off download · later songs in this language start instantly"
+                  : "chords land in ~20–90 s · lyrics with the small model take 1–3 min (a language drops to a bigger model on first run)"}
               </p>
             </div>
           </div>
         )}
 
         {/* Failure state */}
-        {(error || data?.status === "failed") && (
+        {failed && (
           <div
             role="alert"
-            className="p-6 bg-tomato border-2 border-black shadow-hard text-ink"
+            className="p-5 sm:p-6 bg-tomato border-2 border-black shadow-hard text-ink"
           >
-            <p className="font-pixel text-lg mb-2">ANALYSIS FAILED</p>
-            <p className="font-cl text-sm font-semibold">
+            <p className="font-pixel text-lg sm:text-xl mb-2.5">
+              ANALYSIS FAILED
+            </p>
+            <p className="font-cl text-sm sm:text-base font-semibold mb-4">
               {data?.error ??
                 (error instanceof Error
                   ? error.message
                   : "An unknown error occurred.")}
             </p>
+            <Link
+              href="/"
+              className="inline-flex items-center gap-2 min-h-11 bg-ink text-paper border-2 border-black shadow-hard-sm px-3.5 py-2 font-pixel text-xs hover:-translate-y-0.5 transition-transform"
+            >
+              TRY ANOTHER FILE
+            </Link>
           </div>
         )}
 
         {/* Results */}
         {data?.status === "done" && result && (
-          <div className="space-y-4">
+          <div className="space-y-4 sm:space-y-5">
             {/* Stats */}
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2.5">
               <StatChip
                 icon="/icons/note.svg"
                 label="chords"
@@ -270,7 +324,7 @@ export default function ResultsPage({
                 />
               )}
               {result.lyrics_source && result.lyrics_source !== "asr" && (
-                <span className="inline-flex items-center gap-2 bg-lime border-2 border-black shadow-hard-sm px-2.5 py-1.5">
+                <span className="inline-flex items-center min-h-9 bg-lime border-2 border-black shadow-hard-sm px-3 py-2">
                   <span className="font-cl text-ink text-xs uppercase tracking-wider">
                     verified lyrics
                   </span>
@@ -279,12 +333,12 @@ export default function ResultsPage({
               {result.lyrics_source === "asr" &&
                 result.lyric_lines &&
                 result.lyric_lines.length > 0 && (
-                  <span className="font-cl text-paper-dim/75 text-[11px] self-center">
+                  <span className="font-cl text-paper-dim text-xs sm:text-sm self-center">
                     machine-transcribed — may have errors
                   </span>
                 )}
               {result.engine && (
-                <span className="font-cl text-paper-dim/75 text-[11px] self-center">
+                <span className="font-cl text-paper-dim text-xs sm:text-sm self-center">
                   via {result.engine}
                 </span>
               )}
@@ -307,61 +361,74 @@ export default function ResultsPage({
             />
 
             {/* Toolbar: transpose + easy + copy */}
-            <div className="bg-coal border-2 border-black shadow-hard px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-3">
-              <TransposeControl
-                semitones={semitones}
-                onChange={setSemitones}
-                originalKey={originalKey}
-                transposedKey={transposedKey}
-              />
-              <EasyModeControl
-                enabled={easyMode}
-                onChange={setEasyMode}
-                capo={easy?.capo ?? result.easy?.capo ?? 0}
-                reason={easy?.reason ?? result.easy?.reason}
-                easyKey={
-                  easy?.easyKey ?? result.easy?.easy_key ?? undefined
-                }
-              />
-              <button
-                type="button"
-                onClick={handleCopy}
-                className="ml-auto inline-flex items-center gap-2 font-pixel text-xs px-3 py-2 bg-paper text-ink border-2 border-black shadow-hard-sm hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-transform"
-              >
-                <Image
-                  src="/icons/copy.svg"
-                  alt=""
-                  width={14}
-                  height={14}
-                  className="w-3.5 h-3.5"
-                />
-                {copied ? "COPIED!" : "COPY"}
-              </button>
+            <div className="bg-coal border-2 border-black shadow-hard p-3 sm:p-4">
+              <div className="flex flex-wrap items-stretch gap-3 sm:gap-4">
+                <div className="flex-1 min-w-[16rem] bg-ink/45 border-2 border-soot px-3.5 py-3">
+                  <TransposeControl
+                    semitones={semitones}
+                    onChange={setSemitones}
+                    originalKey={originalKey}
+                    transposedKey={transposedKey}
+                  />
+                </div>
+                <div className="flex-1 min-w-[16rem] bg-ink/45 border-2 border-soot px-3.5 py-3">
+                  <EasyModeControl
+                    enabled={easyMode}
+                    onChange={setEasyMode}
+                    capo={easy?.capo ?? result.easy?.capo ?? 0}
+                    reason={easy?.reason ?? result.easy?.reason}
+                    easyKey={easy?.easyKey ?? result.easy?.easy_key ?? undefined}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="self-center w-full sm:w-auto min-h-11 inline-flex items-center justify-center gap-2 font-pixel text-xs sm:text-sm px-5 py-2.5 bg-paper text-ink border-2 border-black shadow-hard-sm hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-transform"
+                >
+                  <Image
+                    src="/icons/copy.svg"
+                    alt=""
+                    width={16}
+                    height={16}
+                    className="w-4 h-4"
+                  />
+                  {copied ? "COPIED!" : "COPY"}
+                </button>
+              </div>
             </div>
 
             {/* The sheet */}
             {result.lyric_lines_roman &&
               result.lyric_lines_roman.length > 0 && (
-                <div className="flex items-center gap-2">
-                  {(["native", "roman", "both"] as const).map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => setScript(s)}
-                      aria-pressed={script === s}
-                      className={`font-pixel text-xs px-3 py-1.5 border-2 border-black transition-transform ${
-                        script === s
-                          ? "bg-gold text-ink shadow-hard-sm"
-                          : "bg-coal text-paper-dim hover:-translate-y-px"
-                      }`}
-                    >
-                      {s === "native"
-                        ? "മലയാളം / हिंदी"
-                        : s === "roman"
-                          ? "ROMAN"
-                          : "BOTH"}
-                    </button>
-                  ))}
+                <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
+                  <span className="font-cl text-paper-dim text-xs uppercase tracking-[0.2em]">
+                    Script
+                  </span>
+                  <div
+                    role="group"
+                    aria-label="Lyrics script"
+                    className="inline-flex border-2 border-black shadow-hard-sm"
+                  >
+                    {(["native", "roman", "both"] as const).map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => setScript(s)}
+                        aria-pressed={script === s}
+                        className={`min-h-9 px-3.5 py-2 font-pixel text-xs sm:text-sm border-r-2 border-black last:border-r-0 transition-colors ${
+                          script === s
+                            ? "bg-gold text-ink"
+                            : "bg-coal text-paper-dim hover:text-paper"
+                        }`}
+                      >
+                        {s === "native"
+                          ? "മലയാളം / हिंदी"
+                          : s === "roman"
+                            ? "ROMAN"
+                            : "BOTH"}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             <ChordSheet
@@ -376,7 +443,7 @@ export default function ResultsPage({
               onSeek={seek}
             />
 
-            <p className="font-cl text-paper-dim/75 text-xs text-center pt-2">
+            <p className="font-cl text-paper-dim text-xs sm:text-sm text-center pt-1 pb-2">
               auto-generated — always trust your ear on complex tracks
             </p>
           </div>

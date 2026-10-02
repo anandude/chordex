@@ -35,15 +35,28 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+# Importing this first keeps huggingface_hub off the stalling xet backend (see
+# pipeline/hf_setup.py) — this module is where every model download happens.
+from pipeline import hf_setup  # noqa: F401
 from pipeline.config import LyricsConfig
+from pipeline.hf_setup import repo_cache_state
 
 logger = logging.getLogger(__name__)
+
+#: ``progress(stage, fraction)`` hook used to report job progress to the UI.
+Progress = Callable[[str, float], None] | None
 
 _fw_models: dict[str, Any] = {}
 _hf_pipes: dict[str, Any] = {}
 _conformer_models: dict[str, Any] = {}
+
+#: Progress band for model load + transcription, shared with lyrics_transcriber
+#: (which hands us 0.45 and expects ~0.8 back before alignment).
+_PCT_MODEL_READY = 0.48
+_PCT_TRANSCRIBE = 0.50
+_PCT_TRANSCRIBE_END = 0.78
 
 _INITIAL_PROMPTS = {
     "hi": "यह एक हिंदी गाना है।",
@@ -62,6 +75,42 @@ MODEL_NOTES = {
     "Sanat-agrwl/indic-crisperwhisper-hindi-v1": "comparison verbatim+timestamps (custom code, MIT)",
     "ai4bharat/indic-conformer-600m-multilingual": "one-model alt (MIT, gated, CTC/RNNT)",
 }
+
+
+def _report(progress: Progress, stage: str, pct: float) -> None:
+    """Progress reporting must never break a job."""
+    if not progress:
+        return
+    try:
+        progress(stage, round(pct, 3))
+    except Exception:
+        pass
+
+
+def fw_repo(name: str) -> str:
+    """CTranslate2 model name → the HF repo faster-whisper itself resolves."""
+    return name if "/" in name else f"Systran/faster-whisper-{name}"
+
+
+def _announce_model(model_name: str, progress: Progress) -> None:
+    """Report whether this run must download weights or just load them.
+
+    A first-time download of an Indic fine-tune is 0.5–1.5 GB and was
+    previously invisible: the UI sat on "separating 15%" for as long as the
+    transfer took (or forever, when a stalled xet client wrote nothing).
+    """
+    repo = fw_repo(model_name)
+    cached, size = repo_cache_state(repo)
+    if cached:
+        logger.info("model cached %s (%s) — loading", repo, f"{size / 1e6:.0f} MB")
+        _report(progress, "loading_model", _PCT_MODEL_READY - 0.03)
+        return
+    logger.warning(
+        "first run with %s: downloading %s from the Hugging Face Hub "
+        "(%s cached) — this happens once per model",
+        model_name, repo, f"{size / 1e6:.0f} MB" if size else "nothing",
+    )
+    _report(progress, "downloading_model", _PCT_MODEL_READY - 0.03)
 
 
 def _get_fw_model(name: str, cfg: LyricsConfig):
@@ -176,6 +225,7 @@ def _dedupe_seams(
 def _transcribe_fw(
     vocal_path: Path, lang_hint: str | None, spans: list[tuple[float, float]],
     model_name: str, cfg: LyricsConfig,
+    on_chunk: Callable[[int], None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     import tempfile
 
@@ -187,7 +237,7 @@ def _transcribe_fw(
     words: list[dict[str, Any]] = []
     raw_lines: list[dict[str, Any]] = []
     detected: str | None = None
-    for s, e in spans:
+    for i, (s, e) in enumerate(spans):
         seg = y_full[int(s * sr_full):int(e * sr_full)]
         if not len(seg):
             continue
@@ -231,12 +281,15 @@ def _transcribe_fw(
                 Path(chunk_path).unlink(missing_ok=True)
             except OSError:
                 pass
+        if on_chunk:
+            on_chunk(i + 1)
     return words, raw_lines, detected
 
 
 def _transcribe_hf(
     vocal_path: Path, lang_hint: str | None, spans: list[tuple[float, float]],
     model_id: str, cfg: LyricsConfig,
+    on_chunk: Callable[[int], None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     import tempfile
 
@@ -248,7 +301,7 @@ def _transcribe_hf(
     y_full, _ = librosa.load(str(vocal_path), sr=16000, mono=True)
     words: list[dict[str, Any]] = []
     raw_lines: list[dict[str, Any]] = []
-    for s, e in spans:
+    for i, (s, e) in enumerate(spans):
         seg = y_full[int(s * 16000):int(e * 16000)]
         if not len(seg):
             continue
@@ -283,6 +336,8 @@ def _transcribe_hf(
                 Path(chunk_path).unlink(missing_ok=True)
             except OSError:
                 pass
+        if on_chunk:
+            on_chunk(i + 1)
     if not words:  # pipeline gave segment text only — split evenly per chunk
         for line in raw_lines:
             toks = line["text"].split()
@@ -336,8 +391,13 @@ def _transcribe_conformer(
 def transcribe_asr(
     vocal_path: str | Path, language: str | None = None,
     cfg: LyricsConfig | None = None,
+    progress: Progress = None,
 ) -> dict[str, Any]:
-    """Chunked, music-tuned ASR over an isolated vocal stem (16 kHz mono)."""
+    """Chunked, music-tuned ASR over an isolated vocal stem (16 kHz mono).
+
+    ``progress`` receives ``(stage, fraction)`` updates for model download /
+    load and per-chunk transcription, so the UI keeps moving on long songs.
+    """
     from lyrics_transcriber import _lines_from_words  # reuse line grouping
 
     cfg = cfg or LyricsConfig.from_env()
@@ -360,12 +420,26 @@ def transcribe_asr(
             float(cfg.asr_chunk_length_s), float(cfg.asr_chunk_overlap_s),
             cfg.asr_rms_threshold,
         )
+        total = max(1, len(spans))
+
+        def _chunk_done(done: int) -> None:
+            span = _PCT_TRANSCRIBE_END - _PCT_TRANSCRIBE
+            _report(progress, "transcribing",
+                    _PCT_TRANSCRIBE + span * (done / total))
+
+        _announce_model(model_name, progress)
         if model_name == "ai4bharat/indic-conformer-600m-multilingual":
             words, raw_lines, detected = _transcribe_conformer(vocal_path, lang_hint, cfg)
+            _chunk_done(total)
         elif "/" in model_name:  # HF transformers fine-tune
-            words, raw_lines, detected = _transcribe_hf(vocal_path, lang_hint, spans, model_name, cfg)
+            words, raw_lines, detected = _transcribe_hf(
+                vocal_path, lang_hint, spans, model_name, cfg, on_chunk=_chunk_done
+            )
         else:  # stock faster-whisper / CTranslate2 id
-            words, raw_lines, detected = _transcribe_fw(vocal_path, lang_hint, spans, model_name, cfg)
+            words, raw_lines, detected = _transcribe_fw(
+                vocal_path, lang_hint, spans, model_name, cfg, on_chunk=_chunk_done
+            )
+        _report(progress, "transcribing", _PCT_TRANSCRIBE_END)
         words = _dedupe_seams(words, float(cfg.asr_chunk_overlap_s))
         words = _drop_repeat_loops(words)
         lines = _lines_from_words(words, raw_lines)

@@ -148,80 +148,87 @@ export default function Home() {
                 height={56}
                 className="mx-auto mb-5 w-12 h-12"
               />
-              <p className="text-ink font-bold text-xl mb-1.5 tracking-tight">
+              <p className="text-ink font-bold text-xl sm:text-2xl mb-2 tracking-tight">
                 {isDragging ? "Drop it!" : "Drop your audio file here"}
               </p>
-              <p className="text-ink/60 text-sm">or click to browse</p>
-              <p className="font-cl text-ink/55 text-xs mt-5">
+              <p className="text-ink/70 text-sm sm:text-base">
+                or click to browse
+              </p>
+              <p className="font-cl text-ink/60 text-xs sm:text-sm mt-5">
                 MP3 · WAV · OGG · FLAC &nbsp;·&nbsp; max 20 MB
               </p>
             </>
           )}
         </div>
 
-        {/* Song metadata — optional, raises lyric lookup hits */}
-        <div className="mt-5 grid grid-cols-2 gap-3">
-          <input
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Song title (optional)"
-            aria-label="Song title"
-            className="bg-paper text-ink text-sm font-semibold border-2 border-black shadow-hard-sm px-3 py-2 placeholder:text-ink/40 focus:outline-none focus:-translate-y-px transition-transform"
-          />
-          <input
-            type="text"
-            value={artist}
-            onChange={(e) => setArtist(e.target.value)}
-            placeholder="Artist (optional)"
-            aria-label="Artist"
-            className="bg-paper text-ink text-sm font-semibold border-2 border-black shadow-hard-sm px-3 py-2 placeholder:text-ink/40 focus:outline-none focus:-translate-y-px transition-transform"
-          />
-        </div>
-        <p className="font-cl text-paper-dim/70 text-[11px] text-center mt-2">
-          title + artist let us fetch verified lyrics instead of transcribing
-        </p>
-
-        {/* Language selector */}
-        <div className="mt-5 flex items-center justify-center gap-3">
-          <label
-            htmlFor="language"
-            className="font-cl text-paper-dim text-xs uppercase tracking-widest"
-          >
-            Lyrics language
-          </label>
-          <select
-            id="language"
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            className="bg-paper text-ink text-sm font-semibold border-2 border-black shadow-hard-sm px-3 py-2 cursor-pointer appearance-none pr-8 bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2210%22%20height%3D%226%22%3E%3Cpath%20d%3D%22M0%200h10L5%206z%22%20fill%3D%22%23000%22%2F%3E%3C%2Fsvg%3E')] bg-no-repeat bg-[right_0.6rem_center] hover:-translate-y-px transition-transform"
-          >
-            {LANGUAGES.map((l) => (
-              <option key={l.value} value={l.value}>
-                {l.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        {language === "ml" && (
-          <p className="font-cl text-paper-dim/85 text-[11px] text-center mt-2">
-            Hindi & Malayalam use a larger lyric model and vocal separation —
-            analysis can take a few extra minutes.
+        {/* Optional details — grouped in one panel so the drop zone stays hero */}
+        <div className="mt-5 bg-coal border-2 border-black shadow-hard p-4 sm:p-5">
+          <p className="font-cl text-paper-dim text-[11px] uppercase tracking-[0.2em] mb-3.5">
+            Song details · optional
           </p>
-        )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Song title"
+              aria-label="Song title"
+              className="w-full bg-paper text-ink text-sm font-semibold border-2 border-black shadow-hard-sm px-3 py-2.5 placeholder:text-ink/45 focus:outline-none focus:-translate-y-px transition-transform"
+            />
+            <input
+              type="text"
+              value={artist}
+              onChange={(e) => setArtist(e.target.value)}
+              placeholder="Artist"
+              aria-label="Artist"
+              className="w-full bg-paper text-ink text-sm font-semibold border-2 border-black shadow-hard-sm px-3 py-2.5 placeholder:text-ink/45 focus:outline-none focus:-translate-y-px transition-transform"
+            />
+          </div>
+          <p className="font-cl text-paper-dim text-xs mt-3 leading-relaxed">
+            title + artist let us fetch verified lyrics instead of transcribing
+          </p>
+
+          <div className="mt-4 pt-4 border-t-2 border-soot">
+            <label
+              htmlFor="language"
+              className="block font-cl text-paper-dim text-[11px] uppercase tracking-[0.2em] mb-2.5"
+            >
+              Lyrics language
+            </label>
+            <select
+              id="language"
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="w-full bg-paper text-ink text-sm font-semibold border-2 border-black shadow-hard-sm px-3 py-2.5 cursor-pointer appearance-none pr-9 min-h-11 bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2210%22%20height%3D%226%22%3E%3Cpath%20d%3D%22M0%200h10L5%206z%22%20fill%3D%22%23000%22%2F%3E%3C%2Fsvg%3E')] bg-no-repeat bg-[right_0.75rem_center] hover:-translate-y-px transition-transform"
+            >
+              {LANGUAGES.map((l) => (
+                <option key={l.value} value={l.value}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+            {language === "ml" && (
+              <p className="font-cl text-paper-dim text-xs mt-2.5 leading-relaxed">
+                Hindi & Malayalam use a larger lyric model and vocal separation
+                — analysis can take a few extra minutes.
+              </p>
+            )}
+          </div>
+        </div>
 
         {/* Error message */}
         {error && (
           <div
             role="alert"
-            className="mt-4 p-4 bg-tomato border-2 border-black shadow-hard-sm text-ink font-semibold text-sm"
+            className="mt-4 p-4 bg-tomato border-2 border-black shadow-hard-sm text-ink font-semibold text-sm sm:text-base"
           >
             {error}
           </div>
         )}
       </div>
 
-      <p className="mt-14 font-cl text-paper-dim/75 text-xs text-center tracking-wide">
+      <p className="mt-10 font-cl text-paper-dim text-xs sm:text-sm text-center tracking-wide">
         chords: Chordino / MIR · lyrics: Whisper · ready in ~1–3 min
       </p>
     </main>
