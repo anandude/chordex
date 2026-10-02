@@ -35,10 +35,15 @@ export interface EasyModeResult {
 
 export interface AnalysisResult {
   chords: ChordEvent[];
-  tempo: number;
+  // Null when beat tracking is skipped (SNAP_TO_BEATS=0) or the fast
+  // metadata-only path is used (CHORD_META=0) — UI renders "—".
+  tempo: number | null;
   key?: string;
   duration?: number;
   engine?: string;
+  // S3 staged delivery: chords render as soon as they land; the frontend
+  // keeps polling while lyrics are still pending/processing.
+  lyrics_status?: "pending" | "processing" | "done" | "failed" | "disabled" | null;
   lyrics?: LyricWord[];
   lyric_lines?: LyricLine[];
   lyric_lines_roman?: LyricLine[];

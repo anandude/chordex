@@ -50,7 +50,10 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 _redis_kv = redis.from_url(REDIS_URL, decode_responses=True)
 _redis_rq = redis.from_url(REDIS_URL)
-_queue = Queue("chord_jobs", connection=_redis_rq)
+# S3: chords (fast) and lyrics (slow) run on separate queues so a
+# minutes-long lyrics job never blocks the next song's chord job.
+_chord_queue = Queue("chord_jobs", connection=_redis_rq)
+_lyrics_queue = Queue("lyrics_jobs", connection=_redis_rq)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 _MAX_BYTES = int(os.getenv("MAX_FILE_SIZE_MB", "20")) * 1024 * 1024
@@ -59,6 +62,8 @@ _RESULT_TTL = 3600  # 1 hour
 _URI_TTL = 3600
 _DEFAULT_JOB_TIMEOUT_S = 7200  # 2 h — CPU separation + ASR, plus a one-off
 #                               model download on an uncached language
+_DEFAULT_CHORD_TIMEOUT_S = 600  # 10 min — chord recognition alone is ~5–60 s;
+#                               anything longer means a stuck vamp plugin
 
 
 def _job_timeout() -> int:
@@ -75,6 +80,14 @@ def _job_timeout() -> int:
         return int(os.getenv("JOB_TIMEOUT_S", str(_DEFAULT_JOB_TIMEOUT_S)))
     except ValueError:
         return _DEFAULT_JOB_TIMEOUT_S
+
+
+def _chord_timeout() -> int:
+    """RQ timeout for the fast chord-only job (``CHORD_TIMEOUT_S``)."""
+    try:
+        return int(os.getenv("CHORD_TIMEOUT_S", str(_DEFAULT_CHORD_TIMEOUT_S)))
+    except ValueError:
+        return _DEFAULT_CHORD_TIMEOUT_S
 
 
 class AnalyzeResponse(BaseModel):
@@ -134,11 +147,19 @@ async def analyze(
         k: (v or "").strip() or None
         for k, v in (("title", title), ("artist", artist), ("album", album))
     }
-    _queue.enqueue(
-        "worker.run_chord_detection",
+    # S3: split enqueue — chords first (fast, renders in seconds), lyrics
+    # second (slow). RQ job ids are namespaced so both can be tracked.
+    _chord_queue.enqueue(
+        "worker.run_chords",
+        args=(uri,),
+        job_id=f"{job_id}:chords",
+        job_timeout=_chord_timeout(),
+    )
+    _lyrics_queue.enqueue(
+        "worker.run_lyrics",
         args=(uri,),
         kwargs={"language": lang, **{k: v for k, v in meta.items() if v}},
-        job_id=job_id,
+        job_id=f"{job_id}:lyrics",
         job_timeout=_job_timeout(),
     )
 
@@ -156,17 +177,68 @@ def _job_progress(job_id: str) -> tuple[str | None, float | None]:
     return None, None
 
 
+def _fetch_job(rq_id: str) -> Job | None:
+    try:
+        return Job.fetch(rq_id, connection=_redis_rq)
+    except NoSuchJobError:
+        return None
+
+
+def _lyrics_state(job_id: str) -> tuple[str, str | None]:
+    """Resolve (lyrics_status, lyrics_error) once chords are cached.
+
+    Lyrics never fail the overall job: a dead lyrics worker surfaces as
+    lyrics_status=failed with the (truncated) error for the UI, while the
+    chords already shown stay put.
+    """
+    from lyrics_transcriber import lyrics_enabled
+
+    if not lyrics_enabled():
+        return "disabled", "disabled"
+    if _redis_kv.get(f"lyrics:{job_id}"):
+        return "done", None
+    job = _fetch_job(f"{job_id}:lyrics")
+    if job is None:
+        # Lyrics job not enqueued (yet) — treat as pending, not an error.
+        return "pending", None
+    if job.is_failed:
+        error_msg = "Lyrics job failed without a traceback."
+        if job.exc_info:
+            error_msg = str(job.exc_info)[-500:]
+        return "failed", error_msg
+    if job.is_started:
+        return "processing", None
+    return "pending", None
+
+
 @app.get("/api/status/{job_id}", response_model=StatusResponse)
 async def get_status(job_id: str):
-    """Poll the status of a chord-analysis job."""
+    """Poll the status of a chord-analysis job.
+
+    S3 staged delivery: returns ``done`` as soon as the fast chord job is
+    cached (seconds), with ``result.lyrics_status`` tracking the slow lyrics
+    job (pending → processing → done/failed/disabled). The frontend renders
+    chords immediately and keeps polling while lyrics are unfinished.
+    """
     cached = _redis_kv.get(f"result:{job_id}")
     if cached:
-        return StatusResponse(status="done", result=json.loads(cached))
+        result = json.loads(cached)
+        lyrics_cached = _redis_kv.get(f"lyrics:{job_id}")
+        if lyrics_cached:
+            result.update(json.loads(lyrics_cached))
+            result["lyrics_status"] = "done"
+        else:
+            state, error = _lyrics_state(job_id)
+            result["lyrics_status"] = state
+            if state == "failed" and error and not result.get("lyrics_error"):
+                result["lyrics_error"] = error
+        return StatusResponse(status="done", result=result)
 
-    try:
-        job = Job.fetch(job_id, connection=_redis_rq)
-    except NoSuchJobError as exc:
-        raise HTTPException(status_code=404, detail="Job not found.") from exc
+    # Chords not cached yet — inspect the chord job (plus a legacy fallback
+    # for jobs enqueued before the S3 split, which used the bare job_id).
+    job = _fetch_job(f"{job_id}:chords") or _fetch_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
 
     if job.is_queued:
         return StatusResponse(status="queued")
@@ -181,7 +253,8 @@ async def get_status(job_id: str):
         return StatusResponse(status="failed", error=error_msg)
     if job.is_finished:
         result = job.result
-        if result:
+        if isinstance(result, dict):
+            result.setdefault("lyrics_status", "pending")
             return StatusResponse(status="done", result=result)
         cached = _redis_kv.get(f"result:{job_id}")
         if cached:
@@ -232,9 +305,14 @@ async def health():
         "status": "ok" if redis_ok else "degraded",
         "redis": redis_ok,
         "engine": os.getenv("CHORD_ENGINE", "auto"),
+        "jobs": "split (chord_jobs + lyrics_jobs)",
+        "chord_timeout": _chord_timeout(),
         "lyrics": os.getenv("ENABLE_LYRICS", "1"),
         "whisper_model": os.getenv("WHISPER_MODEL", "small"),
         "separation": os.getenv("LYRICS_SEPARATION_BACKEND", "demucs"),
         "lrclib": os.getenv("LYRICS_LRCLIB", "1"),
         "alignment": os.getenv("LYRICS_ALIGNMENT", "1"),
+        "chord_meta": os.getenv("CHORD_META", "1"),
+        "snap_to_beats": os.getenv("SNAP_TO_BEATS", "1"),
+        "chroma": f"{os.getenv('CHROMA_KIND', 'cqt')}/{os.getenv('CHROMA_HOP', '2048')}",
     }

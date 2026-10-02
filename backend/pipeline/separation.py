@@ -190,3 +190,72 @@ def separate_vocals(
     except Exception as exc:
         logger.warning("separation failed (%s) — falling back to mixture", exc)
         return audio_path
+
+
+def separate_accompaniment(
+    audio_path: str | Path,
+    out_dir: str | Path | None = None,
+    cfg: LyricsConfig | None = None,
+) -> Path:
+    """A4.1: isolate the instrumental stem (drums+bass+other) for chord analysis.
+
+    Sung vocals are noise to a chord detector on dense mixes; the accompaniment
+    stem removes them while keeping the harmony. Demucs-only (roformer vocals
+    checkpoints cannot produce it) at the model's native sample rate — the
+    chord engines resample to 22050 Hz on load. Cached under a separate stage
+    key from the vocals stem. Falls back to the original mixture (warning
+    logged) when demucs is missing, separation fails or times out.
+
+    NOTE: this is a second demucs run alongside the lyrics vocals stem. If
+    both prove valuable, a future pass should separate once and keep both
+    stems instead of paying ~2x separation cost.
+    """
+    cfg = cfg or LyricsConfig.from_env()
+    audio_path = Path(audio_path)
+
+    cache = stage_cache_path(
+        cfg.cache_dir, "accompaniment", audio_path,
+        "demucs", cfg.demucs_model,
+        ext=".wav",
+    )
+    if cache.exists():
+        logger.info("accompaniment cache hit -> %s", cache)
+        return cache
+
+    deadline = time.time() + max(30, cfg.separation_timeout_s)
+    workdir = Path(out_dir or cache.parent / f"work_acc_{audio_path.stem}")
+    workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        from demucs.api import Separator
+
+        import soundfile as sf
+
+        sep = Separator(model=cfg.demucs_model, device="cpu", progress=False)
+        _, stems = sep.separate_audio_file(str(audio_path))
+        parts = [stems[k].cpu() for k in ("drums", "bass", "other") if k in stems]
+        if not parts:
+            logger.warning("demucs returned no instrumental stems — using mixture")
+            return audio_path
+        acc = parts[0]
+        for part in parts[1:]:
+            acc = acc + part
+        raw = workdir / "accompaniment_raw.wav"
+        sf.write(str(raw), acc.numpy().T, sep.samplerate)
+        if time.time() > deadline:
+            raise TimeoutError("accompaniment separation exceeded timeout")
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
+
+        shutil.copyfile(raw, cache)
+        try:
+            os.remove(raw)
+        except OSError:
+            pass
+        logger.info("accompaniment ok -> %s", cache)
+        return cache
+    except ImportError as exc:
+        logger.warning("demucs not installed (%s) — chords use the mixture", exc)
+        return audio_path
+    except Exception as exc:
+        logger.warning("accompaniment separation failed (%s) — using mixture", exc)
+        return audio_path

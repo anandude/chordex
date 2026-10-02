@@ -58,6 +58,31 @@ services:
       - redis
     command: python worker.py
 
+  # S3 scale-out (optional, commented by default): a dedicated lyrics worker
+  # lets chords and lyrics run in parallel. Costs ~2x RAM — each process
+  # loads its own demucs + whisper weights, so only enable with headroom.
+  # The default single worker serves chord_jobs first, then lyrics_jobs.
+  # lyrics-worker:
+  #   build: ./backend
+  #   environment:
+  #     REDIS_URL: redis://redis:6379
+  #     UPLOAD_DIR: /data/uploads
+  #     ENABLE_LYRICS: "1"
+  #     WHISPER_MODEL: small
+  #     WHISPER_DEVICE: cpu
+  #     WHISPER_COMPUTE_TYPE: int8
+  #     LYRICS_SEPARATION_BACKEND: demucs
+  #     LYRICS_CACHE_DIR: /data/lyrics_cache
+  #     JOB_TIMEOUT_S: "7200"
+  #     HF_HUB_DISABLE_XET: "1"
+  #   volumes:
+  #     - uploads:/data/uploads
+  #     - lyrics_cache:/data/lyrics_cache
+  #     - hf_cache:/root/.cache/huggingface
+  #   depends_on:
+  #     - redis
+  #   command: python worker.py lyrics_jobs
+
 volumes:
   uploads:
   lyrics_cache:
