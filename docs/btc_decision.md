@@ -50,10 +50,14 @@ Viterbi, calibration) may capture half the gap for ~0 RAM.
 3. Loser is deleted, winner gets `CHORD_ENGINE` flag + Docker weight caching
    + a `results.md` row. No two-deep-model maintenance.
 
-## Your decisions (blocking A1.1)
+## Your decisions (recorded 2026-10-02)
 
-- [ ] Hosting budget: stay on Render free/512 MB (forces small-only stack,
-      likely kills deep models in prod) or approve Starter 1 GB (~$7/mo)?
-- [ ] Spike order OK (CREMA → BTC), or BTC-first on principle?
-- [ ] Vendoring a ~100–500 MB `.pt` into the repo/Docker image acceptable,
-      or must weights download at first run (cold-start cost)?
+- [x] Hosting: **stay on free 512 MB** — A1 deep models parked until/unless
+      A2/A4 results show the gap is worth paid RAM. Consequence: any future
+      spike must fit demucs + whisper + model in 512 MB or shed load
+      (e.g. smaller whisper, lyrics off for the comparison run).
+- [x] Spike order: **CREMA first**, BTC second — when unblocked.
+- [x] Weights: **vendored in repo** if a model wins — NOTE tension with the
+      free-tier call: vendored weights + 512 MB + demucs/whisper is the
+      highest OOM risk combo. Revisit (download-on-first-run or Starter)
+      if the spike ever justifies it.
