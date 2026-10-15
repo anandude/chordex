@@ -149,18 +149,36 @@ def prewarm(
         for repo in targets:
             cached, size = repo_cache_state(repo)
             _, expected = inference_files(repo)
+            from pipeline.asr import INDIC_TRANSCRIBE_REPOS
+
+            convert = _is_finetune(repo) and repo not in INDIC_TRANSCRIBE_REPOS
             logger.info(
                 "%-42s %s%s",
                 repo,
                 f"cached ({_fmt_bytes(size)})" if cached
                 else f"would fetch {_fmt_bytes(expected)}",
-                " + convert to CTranslate2" if _is_finetune(repo) else "",
+                " + convert to CTranslate2" if convert else "",
             )
         return []
 
     failed: list[str] = []
+    from pipeline.asr import INDIC_TRANSCRIBE_REPOS
+
     for repo in targets:
-        if _is_finetune(repo):
+        if repo in INDIC_TRANSCRIBE_REPOS:
+            # gated; its own runtime — fetch the HF files, skip the duplicate
+            # NeMo checkpoint (another 4.9 GB)
+            try:
+                from huggingface_hub import snapshot_download
+
+                snapshot_download(repo, ignore_patterns=["nemo/*"],
+                                  token=cfg.hf_token or None)
+                logger.info("ok       %s", repo)
+            except Exception as exc:
+                logger.error("failed   %s (gated: run `hf auth login` and accept the "
+                             "terms on its model page): %s", repo, exc)
+                failed.append(repo)
+        elif _is_finetune(repo):
             try:
                 sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
                 from convert_ct2 import convert
