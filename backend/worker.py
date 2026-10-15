@@ -114,6 +114,7 @@ def run_lyrics(
     title: str | None = None,
     artist: str | None = None,
     album: str | None = None,
+    filename: str | None = None,
 ) -> dict:
     """S3: slow lyrics-only job (separate → lookup/ASR → align → clean).
 
@@ -162,6 +163,7 @@ def run_lyrics(
             lyrics_out = transcribe_lyrics(
                 local_path, language=language, title=title, artist=artist,
                 album=album, duration=duration, progress=_on_stage,
+                filename=filename,
             )
             lyrics["lyrics"] = lyrics_out.get("lyrics", [])
             lyrics["lyric_lines"] = lyrics_out.get("lines", [])

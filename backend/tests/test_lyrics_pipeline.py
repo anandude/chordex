@@ -397,3 +397,22 @@ def test_transcribe_disabled_path(monkeypatch):
     out = lt.transcribe_lyrics("/nonexistent.wav", language="ml")
     assert out["lyrics"] == [] and "disabled" in out["error"]
     monkeypatch.delenv("ENABLE_LYRICS", raising=False)
+
+
+def test_metadata_uses_original_upload_filename(tmp_path):
+    """S2: uploads are stored as audio.<ext>; the original name must drive
+    the LRCLIB lookup (it used to search for the title 'audio')."""
+    from pipeline.lyrics_lookup import get_metadata
+
+    stored = tmp_path / "audio.mp3"
+    m = get_metadata(stored, filename="Chahun Main Ya Naa Aashiqui 2 320 Kbps.mp3")
+    assert m["title"] == "Chahun Main Ya Naa Aashiqui 2"
+    m = get_metadata(
+        stored,
+        filename="Mazha Njaan Arinjirunnilla  Dr. Patient  Hariharan  Bennet Veetraag.mp3",
+    )
+    assert m == {"title": "Mazha Njaan Arinjirunnilla"}  # no guessed artist
+    m = get_metadata(stored, filename="Arijit_Singh - Kesariya [Official Video].mp3")
+    assert m["artist"] == "Arijit Singh" and m["title"] == "Kesariya"
+    # no hint: the stored name "audio" is noise, so no bogus lookup happens
+    assert "title" not in get_metadata(stored)

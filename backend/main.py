@@ -163,7 +163,12 @@ async def analyze(
     _lyrics_queue.enqueue(
         "worker.run_lyrics",
         args=(uri,),
-        kwargs={"language": lang, **{k: v for k, v in meta.items() if v}},
+        kwargs={
+            "language": lang,
+            # stored copy is audio.<ext>; the original name feeds LRCLIB lookup
+            "filename": Path(file.filename or "").name or None,
+            **{k: v for k, v in meta.items() if v},
+        },
         job_id=f"{job_id}:lyrics",
         job_timeout=_job_timeout(),
     )

@@ -173,6 +173,7 @@ def transcribe_lyrics(
     album: str | None = None,
     duration: float | None = None,
     progress: Any = None,
+    filename: str | None = None,
 ) -> dict[str, Any]:
     """
     Full lyrics chain: separate → lookup/ASR → align → clean.
@@ -182,6 +183,7 @@ def transcribe_lyrics(
       language: optional ISO code hint from the upload ("en", "hi", "ml", ...)
       title/artist/album: optional UI metadata (dramatically raises LRCLIB hits)
       duration: optional audio duration in seconds (else probed)
+      filename: original upload filename (the stored copy is audio.<ext>)
       progress: optional callable(stage: str, pct: float) for job observability
 
     Returns:
@@ -233,10 +235,10 @@ def transcribe_lyrics(
     try:
         from pipeline.lyrics_lookup import get_metadata, lookup_lyrics
 
-        metadata = get_metadata(file_path, title, artist, album)
+        metadata = get_metadata(file_path, title, artist, album, filename)
         hit = lookup_lyrics(
             file_path, title=title, artist=artist, album=album,
-            duration=duration, cfg=cfg,
+            duration=duration, cfg=cfg, filename=filename,
         )
         if hit:
             source = hit["source"]
