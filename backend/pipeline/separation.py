@@ -90,7 +90,8 @@ _separators: dict[tuple[str, str], object] = {}
 
 
 def _get_separator(model: str, device: str):
-    """Demucs Separator, kept loaded across jobs (per model+device)."""
+    """Demucs Separator (CPU instances stay cached; GPU ones are released
+    after each run — see _run_demucs)."""
     key = (model, device)
     if key not in _separators:
         from demucs.api import Separator
@@ -120,9 +121,15 @@ def _run_demucs(audio_path: Path, cfg: LyricsConfig) -> tuple[dict, int]:
         sep = _get_separator(cfg.demucs_model, "cpu")
         _, stems = sep.separate_audio_file(str(audio_path))
     out = {k: v.cpu() for k, v in stems.items()}
+    samplerate = sep.samplerate
     del stems
+    if device != "cpu":
+        # Don't park demucs on a 4 GB card between jobs: Whisper and the
+        # aligner need the VRAM next. Reloading from disk costs ~1 s.
+        _separators.pop((cfg.demucs_model, device), None)
+        del sep
     _free_cuda()
-    return out, sep.samplerate
+    return out, samplerate
 
 
 def _free_cuda() -> None:
