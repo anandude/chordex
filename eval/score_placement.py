@@ -82,7 +82,7 @@ def sheet_words(sheet: dict) -> list[dict]:
     for row in sheet.get("rows", []):
         if row.get("kind") != "line":
             continue
-        gap_before = {g["after_word"] + 1 for g in row.get("gaps", []) if g.get("chord") is not None}
+        gap_before = {g["after_word"] + 1 for g in row.get("gaps", []) if g.get("chords")}
         for wi, w in enumerate(row.get("words", [])):
             has = any(s.get("chord") is not None for s in w.get("segs", [])) or wi in gap_before
             for i, tok in enumerate(normalize(w.get("text", "")).split()):
