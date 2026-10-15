@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 import time
 
 from pipeline import hf_setup  # noqa: F401  (must precede huggingface_hub use)
@@ -108,25 +109,40 @@ def download(repo_id: str) -> bool:
 
 
 def targets_for(languages: tuple[str, ...]) -> list[str]:
-    """Repos needed by these languages, plus the default (auto/en) model."""
+    """Hub repos needed by these languages, plus the default (auto/en) and
+    language-ID models. Local CTranslate2 conversions need no download; HF
+    fine-tunes that are not converted yet are returned as-is (prewarm
+    converts them — see scripts/convert_ct2.py)."""
     cfg = LyricsConfig.from_env()
     targets: list[str] = []
     for lang in languages:
-        repo = fw_repo(cfg.asr_model_for(lang))
+        model = cfg.asr_model_for(lang)
+        if Path(model).is_dir():
+            logger.info("language %-4s -> %s (local CTranslate2)", lang, model)
+            continue
+        repo = fw_repo(model)
         logger.info("language %-4s -> %s", lang, repo)
         if repo not in targets:
             targets.append(repo)
-    default_repo = fw_repo(cfg.whisper_model)
-    if default_repo not in targets:
-        logger.info("language auto -> %s", default_repo)
-        targets.append(default_repo)
+    for label, name in (("auto", cfg.whisper_model), ("lid", cfg.lid_model)):
+        repo = fw_repo(name)
+        if repo not in targets:
+            logger.info("language %-4s -> %s", label, repo)
+            targets.append(repo)
     return targets
+
+
+def _is_finetune(repo: str) -> bool:
+    """HF transformers checkpoint (needs conversion), not a CT2 repo."""
+    return not repo.startswith("Systran/") and "faster-whisper" not in repo
 
 
 def prewarm(
     languages: tuple[str, ...], demucs: bool = False, dry_run: bool = False
 ) -> list[str]:
-    """Fetch every model the given languages need. Returns the failed repo ids."""
+    """Fetch (and convert) every model the given languages need, plus the
+    demucs and aligner weights when ``demucs``. Returns the failures."""
+    cfg = LyricsConfig.from_env()
     targets = targets_for(languages)
 
     if dry_run:
@@ -134,14 +150,28 @@ def prewarm(
             cached, size = repo_cache_state(repo)
             _, expected = inference_files(repo)
             logger.info(
-                "%-42s %s",
+                "%-42s %s%s",
                 repo,
                 f"cached ({_fmt_bytes(size)})" if cached
                 else f"would fetch {_fmt_bytes(expected)}",
+                " + convert to CTranslate2" if _is_finetune(repo) else "",
             )
         return []
 
-    failed = [repo for repo in targets if not download(repo)]
+    failed: list[str] = []
+    for repo in targets:
+        if _is_finetune(repo):
+            try:
+                sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
+                from convert_ct2 import convert
+
+                convert(repo, "float16", force=False)
+                logger.info("ok       %s (converted to CTranslate2)", repo)
+            except Exception as exc:
+                logger.error("failed   convert %s: %s", repo, exc)
+                failed.append(repo)
+        elif not download(repo):
+            failed.append(repo)
 
     if demucs:
         try:
@@ -153,6 +183,15 @@ def prewarm(
         except Exception as exc:
             logger.error("failed   demucs %s: %s", cfg.demucs_model, exc)
             failed.append(f"demucs:{cfg.demucs_model}")
+        try:
+            logger.info("fetching MMS_FA aligner weights …")
+            import torchaudio
+
+            torchaudio.pipelines.MMS_FA.get_model(with_star=False)
+            logger.info("ok       MMS_FA aligner")
+        except Exception as exc:
+            logger.error("failed   MMS_FA aligner: %s", exc)
+            failed.append("aligner:MMS_FA")
 
     return failed
 
@@ -161,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[2])
     parser.add_argument("languages", nargs="*", help="ISO codes (default: ml hi)")
     parser.add_argument("--demucs", action="store_true",
-                        help="also fetch the vocal-separation weights")
+                        help="also fetch the vocal-separation + aligner weights")
     parser.add_argument("--all", action="store_true",
                         help="languages + demucs")
     parser.add_argument("--dry-run", action="store_true",
