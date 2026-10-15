@@ -393,9 +393,22 @@ export default function ResultsPage({
                 <StatChip
                   icon="/icons/mic.svg"
                   label="vox"
-                  value={result.lyrics_language}
+                  value={
+                    // auto-detected with low confidence → say so, and hint
+                    // that picking the language on upload helps
+                    result.lyrics_language_prob != null &&
+                    result.lyrics_language_prob < 0.5
+                      ? `${result.lyrics_language}?`
+                      : result.lyrics_language
+                  }
                 />
               )}
+              {result.lyrics_language_prob != null &&
+                result.lyrics_language_prob < 0.5 && (
+                  <span className="font-cl text-paper-dim text-xs self-center">
+                    language guessed — pick it on upload if lyrics look wrong
+                  </span>
+                )}
               {result.lyrics_source && result.lyrics_source !== "asr" && (
                 <span className="inline-flex items-center min-h-9 bg-lime border-2 border-black shadow-hard-sm px-3 py-2">
                   <span className="font-cl text-ink text-xs uppercase tracking-wider">
