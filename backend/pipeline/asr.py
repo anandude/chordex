@@ -10,9 +10,10 @@ Flow (``transcribe_asr``):
      toward ``LYRICS_LANG_CANDIDATES`` (singing confuses ml↔ta). Routing then
      picks the language's model — previously "auto" always meant ``small``
      and the Indic fine-tunes never ran.
-  3. S3 — one batched pass: faster-whisper's ``BatchedInferencePipeline`` with
-     Silero VAD packs voiced audio into ~20–30 s windows and decodes them in
-     batches. The old path cut fixed 12 s windows into temp WAVs; Whisper's
+  3. S3 — one batched pass: faster-whisper's ``BatchedInferencePipeline``
+     decodes ≤20–30 s
+     batches over energy-gated voiced windows of the stem (NOT Silero VAD,
+     which misses sustained singing). The old path cut 12 s windows into temp WAVs; Whisper's
      encoder pads every input to 30 s, so ~60 % of encoder work was padding.
 
 Routing (``LyricsConfig.asr_model_for``):
@@ -195,9 +196,11 @@ def detect_language(y: np.ndarray, cfg: LyricsConfig) -> tuple[str | None, float
     """Vote over up to 4 voiced 30 s windows of the stem."""
     try:
         model = _get_fw_model(cfg.lid_model, cfg)
+        # voiced audio only (energy gate on the stem, ≤ 120 s), then 4 votes
+        voiced = [y[int(s * SR):int(e * SR)] for s, e in voiced_windows(y, 30.0)]
+        clip = np.concatenate(voiced)[: 120 * SR] if voiced else y
         lang, prob, all_probs = model.detect_language(
-            audio=y, vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 200},
+            audio=clip, vad_filter=False,
             language_detection_segments=4, language_detection_threshold=0.5,
         )
         lang, prob = pick_language(lang, float(prob), list(all_probs), cfg.lang_candidates)
@@ -208,26 +211,58 @@ def detect_language(y: np.ndarray, cfg: LyricsConfig) -> tuple[str | None, float
         return None, 0.0
 
 
-# ── VAD windows (transformers path) ───────────────────────────────────────
+# ── voiced windows ────────────────────────────────────────────────────────
+# Silero VAD is trained on SPEECH and misses sustained singing (measured: it
+# marked 41 s of a 183 s ballad as voiced and Whisper lost half the lyrics).
+# The input is already an isolated vocal stem, so plain energy is the right
+# detector: instrumental stretches are near-silent there.
 
-def _speech_windows(y: np.ndarray, max_len: float) -> list[tuple[float, float]]:
-    """Silero VAD speech spans merged greedily into windows ≤ max_len s."""
-    from faster_whisper.vad import VadOptions, get_speech_timestamps
+def voiced_windows(y: np.ndarray, max_len: float, *, hop_s: float = 0.05,
+                   rel_db: float = 35.0, floor_db: float = -50.0,
+                   bridge_s: float = 0.8, min_s: float = 0.3, pad_s: float = 0.2,
+                   ) -> list[tuple[float, float]]:
+    """Energy-gated voiced spans of the stem packed into windows ≤ max_len s.
 
-    spans = get_speech_timestamps(
-        y, VadOptions(min_silence_duration_ms=500, speech_pad_ms=200)
-    )
+    A frame is voiced when its RMS is within ``rel_db`` of the loud (95th
+    percentile) level and above ``floor_db`` dBFS. Gaps < ``bridge_s`` are
+    bridged, blips < ``min_s`` dropped, spans padded by ``pad_s``. Pure
+    numpy (unit-tested)."""
+    hop = max(1, int(hop_s * SR))
+    n = len(y) // hop
+    if n == 0:
+        return []
+    frames = y[: n * hop].reshape(n, hop)
+    rms = np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1)) + 1e-10
+    db = 20 * np.log10(rms)
+    thr = max(floor_db, float(np.percentile(db, 95)) - rel_db)
+    active = db > thr
+    spans: list[list[float]] = []
+    i = 0
+    while i < n:
+        if active[i]:
+            j = i
+            while j < n and active[j]:
+                j += 1
+            s, e = i * hop_s, j * hop_s
+            if spans and s - spans[-1][1] < bridge_s:
+                spans[-1][1] = e
+            else:
+                spans.append([s, e])
+            i = j
+        else:
+            i += 1
+    dur = len(y) / SR
+    spans = [[max(0.0, s - pad_s), min(dur, e + pad_s)] for s, e in spans if e - s >= min_s]
     windows: list[tuple[float, float]] = []
-    for sp in spans:
-        s, e = sp["start"] / SR, sp["end"] / SR
-        while e - s > max_len:  # very long voiced run → hard split
+    for s, e in spans:
+        while e - s > max_len:  # long voiced run → hard split
             windows.append((s, s + max_len))
             s += max_len
-        if windows and e - windows[-1][0] <= max_len and s - windows[-1][1] < 1.0:
+        if windows and e - windows[-1][0] <= max_len and s - windows[-1][1] < 1.5:
             windows[-1] = (windows[-1][0], e)
         else:
             windows.append((s, e))
-    return windows
+    return [(round(s, 3), round(e, 3)) for s, e in windows]
 
 
 # ── post-processing ───────────────────────────────────────────────────────
@@ -277,6 +312,9 @@ def _transcribe_fw(
     duration = max(1e-6, len(y) / SR)
     # Indic scripts are token-dense: shorter windows avoid the 448-token cap.
     chunk = 30 if lang in (None, "en") else 20
+    windows = voiced_windows(y, float(chunk))
+    if not windows:
+        return [], [], lang
     segments, info = pipe.transcribe(
         y,
         language=lang,
@@ -284,8 +322,7 @@ def _transcribe_fw(
         batch_size=cfg.asr_batch_size,
         beam_size=5,
         word_timestamps=True,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 200},
+        clip_timestamps=[{"start": s, "end": e} for s, e in windows],
         chunk_length=chunk,
         no_repeat_ngram_size=3,
         temperature=[0.0, 0.2, 0.4],
@@ -323,7 +360,7 @@ def _transcribe_hf(
     on_progress: Callable[[float], None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     pipe = _get_hf_pipe(model_id, cfg)
-    windows = _speech_windows(y, float(min(30, max(10, cfg.asr_chunk_length_s + 8))))
+    windows = voiced_windows(y, float(min(30, max(10, cfg.asr_chunk_length_s + 8))))
     words: list[dict[str, Any]] = []
     raw_lines: list[dict[str, Any]] = []
     for i, (s, e) in enumerate(windows):

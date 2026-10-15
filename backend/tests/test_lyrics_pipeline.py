@@ -497,3 +497,21 @@ def test_tag_cleanup_and_artist_order_insensitive():
     assert _artist_ratio("Palak Muchhal, Arijit Singh", "Arijit Singh & Palak Muchhal") > 0.9
     assert _artist_ratio("Arijit Singh", "Arijit Singh, Palak Muchhal") >= 0.9
     assert _artist_ratio("Hariharan", "Shreya Ghoshal") < 0.5
+
+
+def test_voiced_windows_keep_sustained_singing():
+    """Energy gate on the stem (Silero VAD dropped held sung notes)."""
+    import numpy as np
+
+    from pipeline.asr import SR, voiced_windows
+
+    t = np.arange(int(40 * SR)) / SR
+    y = 0.001 * np.random.default_rng(0).standard_normal(len(t))  # bleed
+    sing = (t > 2) & (t < 14) | (t > 20) & (t < 21.5) | (t > 30) & (t < 31)
+    y = (y + 0.3 * np.sin(2 * np.pi * 220 * t) * sing).astype(np.float32)
+    w = voiced_windows(y, 30.0)
+    assert w[0][0] <= 2.0 and w[0][1] >= 14.0      # 12 s held note kept whole
+    assert any(s <= 20.0 and e >= 21.5 for s, e in w)
+    assert any(s <= 30.0 and e >= 31.0 for s, e in w)
+    assert all(e - s <= 30.0 for s, e in w)
+    assert sum(e - s for s, e in w) < 20.0          # silence/bleed excluded
