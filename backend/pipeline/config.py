@@ -62,6 +62,10 @@ class LyricsConfig:
     lid_model: str = "small"
     lang_candidates: tuple[str, ...] = ("hi", "ml", "en")
     asr_batch_size: int = 8
+    # beam 1 measured ~38% faster than 5 with the hi medium fine-tune on the
+    # GTX 1650 (20.7 s vs 33.4 s per 5-min song); accuracy impact unmeasured
+    # until reference lyrics exist, so default stays 5.
+    asr_beam_size: int = 5
     asr_chunk_length_s: int = 12  # 10–15 s: Indic scripts are token-dense,
     asr_chunk_overlap_s: int = 2  # 30 s windows risk 448-token truncation
     asr_rms_threshold: float = 0.01  # skip near-silent chunks (instrumental)
@@ -109,6 +113,7 @@ class LyricsConfig:
             lid_model=_env("LYRICS_LID_MODEL", "small"),
             lang_candidates=cands,
             asr_batch_size=int(_env("LYRICS_ASR_BATCH", "8")),
+            asr_beam_size=int(_env("LYRICS_ASR_BEAM", "5")),
             asr_chunk_length_s=int(_env("LYRICS_ASR_CHUNK_S", "12")),
             asr_chunk_overlap_s=int(_env("LYRICS_ASR_OVERLAP_S", "2")),
             hf_token=_env("HF_TOKEN", ""),
