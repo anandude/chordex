@@ -59,11 +59,33 @@ def _tags_from_file(audio_path: Path) -> dict[str, str]:
     return meta
 
 
+_FILENAME_NOISE = re.compile(
+    r"\b(\d{2,3}\s*kbps|official( music| lyric(al)?)? video|lyrics?|lyrical|full song|"
+    r"audio|video|hd|hq|mp3|320|128)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_name(text: str) -> str:
+    text = re.sub(r"[_]+", " ", text)
+    text = re.sub(r"\[[^\]]*\]", " ", text)  # [Official Video], [320kbps]
+    text = _FILENAME_NOISE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip(" -–—.")
+
+
 def _tags_from_filename(audio_path: Path) -> dict[str, str]:
-    """Heuristics: 'Artist - Title.ext', 'Title (Film).ext', '01 Title.ext'."""
+    """Heuristics: 'Artist - Title.ext', 'Title (Film).ext', '01 Title.ext',
+    and download-site names whose fields are separated by 2+ spaces
+    ('Title  Film  Singer  Composer.ext' → title = first field only; the other
+    fields are ambiguous, and a wrong artist would fail the LRCLIB guard)."""
     stem = audio_path.stem.strip()
     meta: dict[str, str] = {}
-    m = re.match(r"^\s*(.+?)\s*[-–—]\s*(.+?)\s*$", stem)
+    fields = [f for f in re.split(r"\s{2,}|\s\|\s", stem) if f.strip()]
+    if len(fields) > 1:
+        stem = fields[0]
+    stem = _clean_name(stem)
+    m = re.match(r"^\s*(.+?)\s+[-–—]\s+(.+?)\s*$", stem) or re.match(
+        r"^\s*([^-–—]+?)\s*[-–—]\s*([^-–—]+?)\s*$", stem)
     if m:
         meta["artist"] = m.group(1).strip()
         meta["title"] = m.group(2).strip()
@@ -82,10 +104,15 @@ def get_metadata(
     title_hint: str | None = None,
     artist_hint: str | None = None,
     album_hint: str | None = None,
+    filename: str | None = None,
 ) -> dict[str, str]:
-    """Precedence: (a) explicit UI fields, (b) file tags, (c) filename."""
+    """Precedence: (a) explicit UI fields, (b) file tags, (c) filename.
+
+    ``filename`` is the ORIGINAL upload name — uploads are stored as
+    ``audio.<ext>``, so the on-disk name carries no information.
+    """
     audio_path = Path(audio_path)
-    meta = _tags_from_filename(audio_path)
+    meta = _tags_from_filename(Path(filename) if filename else audio_path)
     meta.update({k: v for k, v in _tags_from_file(audio_path).items() if v})
     for key, hint in (("title", title_hint), ("artist", artist_hint), ("album", album_hint)):
         if hint and hint.strip():
@@ -118,7 +145,8 @@ def _get_json(url: str, params: dict[str, Any], cfg: LyricsConfig) -> Any | None
                 return None
             return json.loads(resp.read().decode("utf-8", "replace"))
     except Exception as exc:
-        logger.debug("lrclib request failed (%s)", exc)
+        # 429 (rate limit) and timeouts read as a miss — make them visible
+        logger.warning("lrclib request failed (%s)", exc)
         return None
 
 
@@ -291,6 +319,7 @@ def lookup_lyrics(
     album: str | None = None,
     duration: float | None = None,
     cfg: LyricsConfig | None = None,
+    filename: str | None = None,
 ) -> dict[str, Any] | None:
     """Return ``{source, lines, lyrics, language, track}`` or None on miss.
 
@@ -301,7 +330,7 @@ def lookup_lyrics(
     if not cfg.lrclib_enabled:
         return None
     audio_path = Path(audio_path)
-    meta = get_metadata(audio_path, title, artist, album)
+    meta = get_metadata(audio_path, title, artist, album, filename)
     if not meta.get("title"):
         logger.info("lrclib: no title metadata — skipping lookup")
         return None
