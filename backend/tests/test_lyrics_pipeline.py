@@ -451,14 +451,27 @@ def test_romanise_fallback_without_engine():
     assert cleanup.romanise_lines(lines, "xx") == lines
 
 
-def test_romanise_indic_backend():
+def test_romanise_indic_backend(monkeypatch):
     indic = pytest.importorskip("indic_transliteration")
     from pipeline import cleanup
 
+    monkeypatch.setenv("LYRICS_ROMAN_BACKEND", "indic")
     lines = [{"timestamp": 0.0, "end": 1.0, "text": "ഹലോ ലോകം"}]
     out = cleanup.romanise_lines(lines, "ml")
     assert out[0]["roman"] == "halo lokaM"
     assert out[0]["text"] == "ഹലോ ലോകം"  # canonical stays native
+
+
+def test_romanise_readable_backend_is_default(monkeypatch):
+    pytest.importorskip("aksharamukha")
+    from pipeline import cleanup
+
+    monkeypatch.delenv("LYRICS_ROMAN_BACKEND", raising=False)
+    lines = [{"timestamp": 0.0, "end": 1.0, "text": "തും ഹീ ഹോ"}]
+    out = cleanup.romanise_lines([{"timestamp": 0.0, "end": 1.0,
+                                   "text": "मैं तुम्हें"}], "hi")
+    assert out[0]["roman"] == "main tumhein"
+    assert cleanup.romanise_lines(lines, "ml")[0]["text"] == lines[0]["text"]
 
 
 # ── orchestrator ──────────────────────────────────────────────────────────
