@@ -28,7 +28,9 @@ def test_config_defaults_and_routing(monkeypatch):
     cfg = LyricsConfig.from_env()
     assert cfg.separation_backend == "demucs"
     assert cfg.demucs_model == "htdemucs"
-    assert cfg.asr_model_for("ml") == "adalat-ai/whisper-medium-ml-rmft"
+    assert cfg.asr_model_for("ml") == "bodhan-ai/indic-transcribe-core"
+    assert cfg.asr_fallback_for("ml") == "adalat-ai/whisper-medium-ml-rmft"
+    assert cfg.asr_fallback_for("en") == cfg.whisper_model
     assert cfg.asr_model_for("hi") == "adalat-ai/whisper-medium-hi-high-lr"
     assert cfg.asr_model_for(None) == "small"
     assert cfg.lrclib_enabled and cfg.alignment_enabled
@@ -234,17 +236,17 @@ def test_auto_language_is_detected_before_model_routing(tmp_path, monkeypatch):
     monkeypatch.setattr(asr, "detect_language", lambda y, cfg: ("ml", 0.7))
     seen = {}
 
-    def fake_hf(y, lang, model, cfg, on_progress=None):
+    def fake_it(y, lang, model, cfg, on_progress=None):
         seen["model"], seen["lang"] = model, lang
         return [], [], lang
 
-    monkeypatch.setattr(asr, "_transcribe_hf", fake_hf)
+    monkeypatch.setattr(asr, "_transcribe_indic_transcribe", fake_it)
     out = asr.transcribe_asr(
         tmp_path / "v.wav", language=None,
         cfg=LyricsConfig(whisper_model="small", cache_dir=str(tmp_path)),
         audio=np.zeros(16000, dtype=np.float32),
     )
-    assert seen == {"model": "adalat-ai/whisper-medium-ml-rmft", "lang": "ml"}
+    assert seen == {"model": "bodhan-ai/indic-transcribe-core", "lang": "ml"}
     assert out["language"] == "ml" and out["language_prob"] == 0.7
 
 
@@ -519,7 +521,7 @@ def test_voiced_windows_keep_sustained_singing():
     assert sum(e - s for s, e in w) < 20.0          # silence/bleed excluded
 
 
-def test_failed_finetune_falls_back_to_stock_model(tmp_path, monkeypatch):
+def test_failed_model_falls_back_to_language_fallback(tmp_path, monkeypatch):
     """A broken fine-tune never fails the job: same pipeline, stock model,
     language pinned to what the first attempt detected."""
     from pipeline import asr, lyrics_lookup
@@ -535,7 +537,7 @@ def test_failed_finetune_falls_back_to_stock_model(tmp_path, monkeypatch):
     def fake_asr(path, language=None, cfg=None, progress=None, audio=None):
         model = cfg.asr_model_for(language or "ml")
         calls.append((language, model))
-        if model != "small":
+        if model == "bodhan-ai/indic-transcribe-core":
             return {"lyrics": [], "lines": [], "language": "ml", "error": "boom", "model": model}
         return {"lyrics": [{"word": "x", "timestamp": 1.0, "end": 1.2}],
                 "lines": [{"timestamp": 1.0, "end": 1.2, "text": "x"}],
@@ -545,8 +547,8 @@ def test_failed_finetune_falls_back_to_stock_model(tmp_path, monkeypatch):
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"")
     out = lt.transcribe_lyrics(str(wav))
-    assert calls[1] == ("ml", "small")
-    assert out["lyrics"] and "→small" in out["models"]["asr"]
+    assert calls[1] == ("ml", "adalat-ai/whisper-medium-ml-rmft")
+    assert out["lyrics"] and "→adalat-ai/whisper-medium-ml-rmft" in out["models"]["asr"]
 
 
 def test_routing_prefers_local_ct2_conversion(tmp_path, monkeypatch):
@@ -570,3 +572,69 @@ def test_script_language_for_verified_lyrics():
     assert script_language("चाहूँ मैं या ना, तेरे बिना") == "hi"
     assert script_language("മഴ ഞാൻ അറിഞ്ഞിരുന്നില്ല") == "ml"
     assert script_language("Wise men say only fools rush in") is None
+
+
+def test_indic_transcribe_decodes_per_voiced_window(monkeypatch):
+    """Text-only runtime: one decode per voiced window (≤30 s), exact window
+    spans as raw lines, language identified once when not given."""
+    import numpy as np
+
+    from pipeline import asr
+    from pipeline.config import LyricsConfig
+
+    calls = []
+
+    class FakeASR:
+        device = "cpu"
+
+        class model:  # noqa: N801 — stands in for the torch module
+            @staticmethod
+            def parameters():
+                import torch
+                return iter([torch.zeros(1)])
+
+        def transcribe(self, seg, lang=None, return_lid=False):
+            calls.append(lang)
+            return ("മഴ ഞാൻ", {"lang": "ml"}) if return_lid else "അറിഞ്ഞില്ല ഇന്ന്"
+
+    monkeypatch.setattr(asr, "_get_indic_transcribe", lambda repo, cfg: FakeASR())
+    monkeypatch.setattr(asr, "voiced_windows", lambda y, m: [(1.0, 5.0), (10.0, 14.0)])
+    y = np.zeros(20 * asr.SR, dtype=np.float32)
+    words, lines, lang = asr._transcribe_indic_transcribe(
+        y, None, "bodhan-ai/indic-transcribe-core", LyricsConfig())
+    assert calls == [None, "ml"] and lang == "ml"
+    assert [(l["timestamp"], l["end"]) for l in lines] == [(1.0, 5.0), (10.0, 14.0)]
+    assert [w["word"] for w in words] == ["മഴ", "ഞാൻ", "അറിഞ്ഞില്ല", "ഇന്ന്"]
+    assert words[0]["timestamp"] == 1.0 and words[2]["timestamp"] == 10.0
+
+
+def test_window_timed_asr_is_aligned_per_window(tmp_path, monkeypatch):
+    """The orchestrator aligns text-only ASR by its exact windows (lines), not
+    by the evenly-spread guessed word times."""
+    from pipeline import alignment, asr, lyrics_lookup
+    import lyrics_transcriber as lt
+
+    monkeypatch.setenv("LYRICS_SEPARATION_BACKEND", "none")
+    monkeypatch.setenv("LYRICS_LRCLIB", "0")
+    monkeypatch.setattr(lyrics_lookup, "get_metadata", lambda *a, **k: {})
+    window = [{"timestamp": 2.0, "end": 6.0, "text": "a b"}]
+    monkeypatch.setattr(asr, "transcribe_asr", lambda *a, **k: {
+        "lyrics": [{"word": "a", "timestamp": 2.0, "end": 4.0},
+                   {"word": "b", "timestamp": 4.0, "end": 6.0}],
+        "lines": window, "segments": window, "language": "ml", "error": None,
+        "model": "bodhan-ai/indic-transcribe-core", "timing": "window"})
+    seen = {}
+
+    def fake_align(path, text, language=None, *, lines=None, words=None, **k):
+        seen["lines"], seen["words"] = lines, words
+        return {"words": [{"word": "a", "timestamp": 2.5, "end": 2.9},
+                          {"word": "b", "timestamp": 5.0, "end": 5.4}],
+                "lines": lines, "backend": "mms-fa", "error": None}
+
+    monkeypatch.setattr(alignment, "align", fake_align)
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"")
+    out = lt.transcribe_lyrics(str(wav))
+    assert seen == {"lines": window, "words": None}
+    assert [w["timestamp"] for w in out["lyrics"]] == [2.5, 5.0]
+    assert len(out["lines"]) == 2  # 2.1 s pause splits the 4 s window
