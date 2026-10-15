@@ -14,7 +14,7 @@ from typing import Any
 
 import redis
 from dotenv import load_dotenv
-from rq import Queue, Worker
+from rq import Queue, SimpleWorker, Worker
 
 import storage
 
@@ -233,8 +233,15 @@ if __name__ == "__main__":
     # demucs + whisper weights.)
     wanted = _sys.argv[1:] or ["chord_jobs", "lyrics_jobs"]
     queues = [Queue(name, connection=redis_conn) for name in wanted]
-    worker = Worker(queues, connection=redis_conn)
-    print(f"Worker started. Listening on queues: {', '.join(wanted)}")
+    # S4: a lyrics-only worker runs jobs in-process (SimpleWorker) so demucs,
+    # Whisper and the aligner stay loaded between songs — the default Worker
+    # forks a fresh work horse per job and every model cache died with it.
+    # RQ's job timeout still applies (SIGALRM in the main thread). Chord jobs
+    # keep the forking Worker: a stuck Vamp plugin must not take the worker
+    # down with it.
+    worker_cls = SimpleWorker if wanted == ["lyrics_jobs"] else Worker
+    worker = worker_cls(queues, connection=redis_conn)
+    print(f"{worker_cls.__name__} started. Listening on queues: {', '.join(wanted)}")
     print(f"UPLOAD_DIR={storage.UPLOAD_DIR}")
     print(f"CHORD_ENGINE={os.getenv('CHORD_ENGINE', 'auto')}")
     print(f"CHORD_SOURCE={os.getenv('CHORD_SOURCE', 'mix')}")
