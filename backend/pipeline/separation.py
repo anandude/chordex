@@ -3,8 +3,9 @@ pipeline/separation.py
 ----------------------
 Phase 1 — vocal separation before ASR. One interface, two backends:
 
-  demucs   — ``htdemucs_ft`` (two-stem vocals). Reliable default; meaningfully
-             better than base ``htdemucs`` at the same cost. NOTE: the demucs
+  demucs   — ``htdemucs`` by default (``htdemucs_ft`` = 4-model bag, ~4x the
+             compute; opt in via LYRICS_DEMUCS_MODEL). Runs on the GPU when
+             available (LYRICS_DEVICE=auto), CPU fallback. NOTE: the demucs
              Python API (``Separator``) does not expose the CLI's
              ``--two-stems`` flag, so we run the full model and keep the
              ``vocals`` stem — identical vocal quality, extra stems discarded.
@@ -85,16 +86,68 @@ def _to_16k_mono(src: Path, dst: Path) -> Path:
     return dst
 
 
-def _separate_demucs(audio_path: Path, workdir: Path, cfg: LyricsConfig) -> Path:
-    from demucs.api import Separator
+_separators: dict[tuple[str, str], object] = {}
 
+
+def _get_separator(model: str, device: str):
+    """Demucs Separator (CPU instances stay cached; GPU ones are released
+    after each run — see _run_demucs)."""
+    key = (model, device)
+    if key not in _separators:
+        from demucs.api import Separator
+
+        logger.info("loading demucs model=%s device=%s", model, device)
+        # segment/split keep VRAM bounded (htdemucs fits a 4 GB GTX 1650)
+        _separators[key] = Separator(model=model, device=device, progress=False)
+    return _separators[key]
+
+
+def _run_demucs(audio_path: Path, cfg: LyricsConfig) -> tuple[dict, int]:
+    """Run demucs once → (stems dict of CPU tensors, samplerate).
+
+    Uses the GPU when available (``cfg.torch_device()``); a CUDA failure such
+    as out-of-memory frees VRAM and retries on CPU instead of failing.
+    """
+    device = cfg.torch_device()
+    try:
+        sep = _get_separator(cfg.demucs_model, device)
+        _, stems = sep.separate_audio_file(str(audio_path))
+    except RuntimeError as exc:  # torch.cuda.OutOfMemoryError subclasses it
+        if device == "cpu":
+            raise
+        logger.warning("demucs on %s failed (%s) — retrying on cpu", device, exc)
+        _separators.pop((cfg.demucs_model, device), None)
+        _free_cuda()
+        sep = _get_separator(cfg.demucs_model, "cpu")
+        _, stems = sep.separate_audio_file(str(audio_path))
+    out = {k: v.cpu() for k, v in stems.items()}
+    samplerate = sep.samplerate
+    del stems
+    if device != "cpu":
+        # Don't park demucs on a 4 GB card between jobs: Whisper and the
+        # aligner need the VRAM next. Reloading from disk costs ~1 s.
+        _separators.pop((cfg.demucs_model, device), None)
+        del sep
+    _free_cuda()
+    return out, samplerate
+
+
+def _free_cuda() -> None:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _separate_demucs(audio_path: Path, workdir: Path, cfg: LyricsConfig) -> Path:
     import soundfile as sf
 
-    sep = Separator(model=cfg.demucs_model, device="cpu", progress=False)
-    _, stems = sep.separate_audio_file(str(audio_path))
-    vocals = stems["vocals"].cpu()
+    stems, sr = _run_demucs(audio_path, cfg)
     raw = workdir / "vocals_raw.wav"
-    sf.write(str(raw), vocals.numpy().T, sep.samplerate)
+    sf.write(str(raw), stems["vocals"].numpy().T, sr)
     return raw
 
 
@@ -226,13 +279,10 @@ def separate_accompaniment(
     workdir = Path(out_dir or cache.parent / f"work_acc_{audio_path.stem}")
     workdir.mkdir(parents=True, exist_ok=True)
     try:
-        from demucs.api import Separator
-
         import soundfile as sf
 
-        sep = Separator(model=cfg.demucs_model, device="cpu", progress=False)
-        _, stems = sep.separate_audio_file(str(audio_path))
-        parts = [stems[k].cpu() for k in ("drums", "bass", "other") if k in stems]
+        stems, samplerate = _run_demucs(audio_path, cfg)
+        parts = [stems[k] for k in ("drums", "bass", "other") if k in stems]
         if not parts:
             logger.warning("demucs returned no instrumental stems — using mixture")
             return audio_path
@@ -240,7 +290,7 @@ def separate_accompaniment(
         for part in parts[1:]:
             acc = acc + part
         raw = workdir / "accompaniment_raw.wav"
-        sf.write(str(raw), acc.numpy().T, sep.samplerate)
+        sf.write(str(raw), acc.numpy().T, samplerate)
         if time.time() > deadline:
             raise TimeoutError("accompaniment separation exceeded timeout")
         cache.parent.mkdir(parents=True, exist_ok=True)

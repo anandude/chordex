@@ -13,6 +13,15 @@ import os
 from dataclasses import dataclass, field
 
 
+def ct2_dir_for(model_id: str) -> "Path":
+    """Local CTranslate2 conversion dir for an HF model id (scripts/convert_ct2.py)."""
+    from pathlib import Path
+
+    base = Path(os.getenv("LYRICS_CT2_DIR", "").strip()
+                or Path(__file__).resolve().parent.parent / "models" / "ct2")
+    return base / model_id.replace("/", "--")
+
+
 def _env(name: str, default: str) -> str:
     return os.getenv(name, default).strip() or default
 
@@ -28,7 +37,9 @@ def _env_flag(name: str, default: bool) -> bool:
 class LyricsConfig:
     # Phase 1 — separation
     separation_backend: str = "demucs"  # none | demucs | roformer
-    demucs_model: str = "htdemucs_ft"
+    # htdemucs (single model) by default: htdemucs_ft is a bag of 4 models,
+    # ~4x the compute for a small vocal-quality gain. Opt in via env.
+    demucs_model: str = "htdemucs"
     roformer_model: str = ""  # empty = resolve from audio-separator model list at runtime
     dereverb: bool = False
     dereverb_model: str = ""
@@ -43,8 +54,18 @@ class LyricsConfig:
     # Phase 3 — ASR
     whisper_model: str = "small"
     whisper_model_overrides_json: str = ""
-    whisper_device: str = "cpu"
-    whisper_compute_type: str = ""
+    whisper_device: str = "auto"  # auto | cpu | cuda (see pipeline/gpu.py)
+    whisper_compute_type: str = ""  # empty → int8_float16 on cuda, int8 on cpu
+    # A1: language ID runs on the stem BEFORE model routing. Candidates bias
+    # detection toward the languages we serve (singing confuses ml↔ta); a
+    # non-candidate wins only when Whisper is very sure (see asr.py).
+    lid_model: str = "small"
+    lang_candidates: tuple[str, ...] = ("hi", "ml", "en")
+    asr_batch_size: int = 8
+    # beam 1 measured ~38% faster than 5 with the hi medium fine-tune on the
+    # GTX 1650 (20.7 s vs 33.4 s per 5-min song); accuracy impact unmeasured
+    # until reference lyrics exist, so default stays 5.
+    asr_beam_size: int = 5
     asr_chunk_length_s: int = 12  # 10–15 s: Indic scripts are token-dense,
     asr_chunk_overlap_s: int = 2  # 30 s windows risk 448-token truncation
     asr_rms_threshold: float = 0.01  # skip near-silent chunks (instrumental)
@@ -59,6 +80,7 @@ class LyricsConfig:
     romanisation_enabled: bool = True  # display toggle default; storage stays native
 
     # Cross-cutting
+    device: str = "auto"  # torch models (demucs, aligner): auto | cpu | cuda[:n]
     cache_dir: str = "/tmp/chordex_lyrics_cache"
     user_agent: str = "ChordLens/2.0 (lyrics eval; contact: owner)"
 
@@ -66,15 +88,18 @@ class LyricsConfig:
     def from_env(cls) -> "LyricsConfig":
         overrides_raw = _env("WHISPER_MODEL_OVERRIDES", "")
         compute = _env("WHISPER_COMPUTE_TYPE", "")
-        device = _env("WHISPER_DEVICE", "cpu")
-        if not compute:
-            compute = "int8" if device == "cpu" else "float16"
+        device = _env("WHISPER_DEVICE", "auto").lower()
+        cands = tuple(
+            c.strip().lower()
+            for c in _env("LYRICS_LANG_CANDIDATES", "hi,ml,en").split(",")
+            if c.strip()
+        )
         sep = _env("LYRICS_SEPARATION_BACKEND", "demucs").lower()
         if _env("SEPARATE_VOCALS", "1").lower() in {"0", "false", "no", "off"}:
             sep = "none"
         return cls(
             separation_backend=sep,
-            demucs_model=_env("LYRICS_DEMUCS_MODEL", "htdemucs_ft"),
+            demucs_model=_env("LYRICS_DEMUCS_MODEL", "htdemucs"),
             roformer_model=_env("LYRICS_ROFORMER_MODEL", ""),
             dereverb=_env_flag("LYRICS_DEREVERB", False),
             dereverb_model=_env("LYRICS_DEREVERB_MODEL", ""),
@@ -85,6 +110,10 @@ class LyricsConfig:
             whisper_model_overrides_json=overrides_raw,
             whisper_device=device,
             whisper_compute_type=compute,
+            lid_model=_env("LYRICS_LID_MODEL", "small"),
+            lang_candidates=cands,
+            asr_batch_size=int(_env("LYRICS_ASR_BATCH", "8")),
+            asr_beam_size=int(_env("LYRICS_ASR_BEAM", "5")),
             asr_chunk_length_s=int(_env("LYRICS_ASR_CHUNK_S", "12")),
             asr_chunk_overlap_s=int(_env("LYRICS_ASR_OVERLAP_S", "2")),
             hf_token=_env("HF_TOKEN", ""),
@@ -95,7 +124,23 @@ class LyricsConfig:
             ),
             llm_cleanup_enabled=_env_flag("LYRICS_LLM_CLEANUP", False),
             cache_dir=_env("LYRICS_CACHE_DIR", "/tmp/chordex_lyrics_cache"),
+            device=_env("LYRICS_DEVICE", "auto").lower(),
         )
+
+    def torch_device(self) -> str:
+        """Resolve ``device`` for torch models: ``auto`` → cuda when a GPU is
+        usable, else cpu. Explicit cuda without a GPU degrades to cpu."""
+        pref = self.device or "auto"
+        if pref == "cpu":
+            return "cpu"
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return pref if pref.startswith("cuda") else "cuda"
+        except Exception:
+            pass
+        return "cpu"
 
     def asr_model_for(self, language: str | None) -> str:
         """Phase 3 routing table. HF fine-tunes contain '/' and load via the
@@ -111,9 +156,14 @@ class LyricsConfig:
                 builtin.update({str(k): str(v) for k, v in parsed.items()})
             except (ValueError, TypeError):
                 pass
-        if language and language in builtin:
-            return builtin[language]
-        return self.whisper_model
+        name = builtin[language] if language and language in builtin else self.whisper_model
+        # A2: prefer a local CTranslate2 conversion (batched faster-whisper)
+        # over the transformers runtime for HF fine-tunes.
+        if "/" in name:
+            ct2 = ct2_dir_for(name)
+            if (ct2 / "model.bin").exists():
+                return str(ct2)
+        return name
 
     def describe(self) -> str:
         parts = [
@@ -127,6 +177,7 @@ class LyricsConfig:
         ]
         if self.separation_backend == "demucs":
             parts.append(f"demucs={self.demucs_model}")
+        parts.append(f"device={self.device}")
         if self.dereverb:
             parts.append("dereverb=on")
         return "|".join(parts)

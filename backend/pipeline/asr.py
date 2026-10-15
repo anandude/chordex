@@ -1,33 +1,31 @@
 """
 pipeline/asr.py
 ---------------
-Phase 3 — language-specific ASR with music-tuned chunking.
+Phase 3 — language-specific ASR over the isolated vocal stem.
+
+Flow (``transcribe_asr``):
+  1. Decode the 16 kHz mono stem ONCE into memory; every step reuses the array.
+  2. A1 — language ID *before* routing: with no per-job hint, a stock Whisper
+     model (``LYRICS_LID_MODEL``) votes over the first voiced windows, biased
+     toward ``LYRICS_LANG_CANDIDATES`` (singing confuses ml↔ta). Routing then
+     picks the language's model — previously "auto" always meant ``small``
+     and the Indic fine-tunes never ran.
+  3. S3 — one batched pass: faster-whisper's ``BatchedInferencePipeline``
+     decodes ≤20–30 s
+     batches over energy-gated voiced windows of the stem (NOT Silero VAD,
+     which misses sustained singing). The old path cut 12 s windows into temp WAVs; Whisper's
+     encoder pads every input to 30 s, so ~60 % of encoder work was padding.
 
 Routing (``LyricsConfig.asr_model_for``):
-  ml → adalat-ai/whisper-medium-ml-rmft (769M, Apache-2.0, verified)
-  hi → adalat-ai/whisper-medium-hi-high-lr (769M, Apache-2.0, verified)
-  small fallbacks: adalat-ai/whisper-small-ml-rmft / -hi-high-lr (244M)
-Comparison presets (env-overridable, benchmark don't assume):
-  thennal/whisper-medium-ml, vasista22/whisper-hindi-large-v2 (1.5B),
-  Sanat-agrwl/indic-crisperwhisper-hindi-v1 (was user71/… — ID corrected,
-    custom retok code, wire as transformers-pipeline only),
-  ai4bharat/indic-conformer-600m-multilingual (MIT, gated — needs HF_TOKEN,
-    trust_remote_code, ``model(wav, lang, 'ctc'|'rnnt')`` API).
+  ml → adalat-ai/whisper-medium-ml-rmft (769M, Apache-2.0)
+  hi → adalat-ai/whisper-medium-hi-high-lr (769M, Apache-2.0)
+  else → WHISPER_MODEL (default small)
+Runtimes: a CTranslate2 model dir/name → faster-whisper; an HF id containing
+'/' without a CT2 conversion → transformers pipeline over VAD windows;
+indic-conformer → its own CTC path. All stay loaded across requests.
 
-Runtimes: IDs containing '/' load via transformers ASR pipeline (HF
-fine-tunes are transformers checkpoints, not CTranslate2); plain names
-(small, large-v3-turbo) use faster-whisper. Both kept loaded across requests.
-
-Chunking: 12 s windows (10–15 s per brief — Indic scripts are token-dense and
-30 s windows risk the 448-token truncation), ~2 s seam dedup, explicit
-``language`` + ``task='transcribe'``. Near-silent chunks (vocal-stem RMS below
-threshold) are skipped to suppress instrumental hallucinations; repeated
-n-gram loops are dropped.
-
-Speed note: converting a chosen HF checkpoint to CTranslate2
-(``ct2-transformers-converter --model <id> --quantization int8``) for
-faster-whisper gives large size/speed wins — validate CER on eval/ before
-shipping a quantised model.
+Devices: faster-whisper on CUDA when CTranslate2 can load cuBLAS 12 (see
+pipeline/gpu.py), torch models via ``LyricsConfig.torch_device``.
 """
 
 from __future__ import annotations
@@ -37,16 +35,21 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
+
 # Importing this first keeps huggingface_hub off the stalling xet backend (see
 # pipeline/hf_setup.py) — this module is where every model download happens.
 from pipeline import hf_setup  # noqa: F401
 from pipeline.config import LyricsConfig
+from pipeline.gpu import whisper_compute_type, whisper_device
 from pipeline.hf_setup import repo_cache_state
 
 logger = logging.getLogger(__name__)
 
 #: ``progress(stage, fraction)`` hook used to report job progress to the UI.
 Progress = Callable[[str, float], None] | None
+
+SR = 16000
 
 _fw_models: dict[str, Any] = {}
 _hf_pipes: dict[str, Any] = {}
@@ -63,6 +66,11 @@ _INITIAL_PROMPTS = {
     "ml": "ഇതൊരു മലയാളം ഗാനമാണ്.",
     "en": None,
 }
+
+#: Non-candidate languages win LID only when Whisper is this sure AND this many
+#: times more confident than the best candidate.
+_LID_OVERRIDE_PROB = 0.85
+_LID_OVERRIDE_RATIO = 3.0
 
 #: ISO-639-1 → notes for the recommendation table (eval).
 MODEL_NOTES = {
@@ -93,12 +101,10 @@ def fw_repo(name: str) -> str:
 
 
 def _announce_model(model_name: str, progress: Progress) -> None:
-    """Report whether this run must download weights or just load them.
-
-    A first-time download of an Indic fine-tune is 0.5–1.5 GB and was
-    previously invisible: the UI sat on "separating 15%" for as long as the
-    transfer took (or forever, when a stalled xet client wrote nothing).
-    """
+    """Report whether this run must download weights or just load them."""
+    if Path(model_name).is_dir():
+        _report(progress, "loading_model", _PCT_MODEL_READY - 0.03)
+        return
     repo = fw_repo(model_name)
     cached, size = repo_cache_state(repo)
     if cached:
@@ -113,16 +119,62 @@ def _announce_model(model_name: str, progress: Progress) -> None:
     _report(progress, "downloading_model", _PCT_MODEL_READY - 0.03)
 
 
+def load_stem(path: str | Path) -> np.ndarray:
+    """16 kHz mono float32. Separation already writes exactly that, so the
+    common case is a cheap soundfile read; anything else is resampled."""
+    try:
+        import soundfile as sf
+
+        y, sr = sf.read(str(path), dtype="float32", always_2d=False)
+        if sr == SR and y.ndim == 1:
+            return y
+    except Exception:
+        pass
+    import librosa
+
+    y, _ = librosa.load(str(path), sr=SR, mono=True)
+    return y.astype(np.float32)
+
+
+def _evict_fw(keep: set[str]) -> None:
+    """Free faster-whisper models not in ``keep`` (CTranslate2 releases VRAM
+    when the model object is collected)."""
+    import gc
+
+    for name in [n for n in _fw_models if n not in keep]:
+        logger.info("unloading faster-whisper model=%s", name)
+        del _fw_models[name]
+    gc.collect()
+
+
 def _get_fw_model(name: str, cfg: LyricsConfig):
+    """Load (or reuse) a faster-whisper model.
+
+    VRAM budget (4 GB GTX 1650): only the language-ID model and ONE ASR
+    model stay resident — a hi job followed by an ml job used to stack two
+    medium models next to demucs and the aligner and run out of memory.
+    """
     if name in _fw_models:
         return _fw_models[name]
     from faster_whisper import WhisperModel
 
-    logger.info("loading faster-whisper model=%s device=%s compute=%s",
-                name, cfg.whisper_device, cfg.whisper_compute_type)
-    _fw_models[name] = WhisperModel(
-        name, device=cfg.whisper_device, compute_type=cfg.whisper_compute_type
-    )
+    _evict_fw(keep={cfg.lid_model})
+    device = whisper_device(cfg.whisper_device)
+    compute = whisper_compute_type(device, cfg.whisper_compute_type)
+    logger.info("loading faster-whisper model=%s device=%s compute=%s", name, device, compute)
+    try:
+        _fw_models[name] = WhisperModel(name, device=device, compute_type=compute)
+    except (RuntimeError, ValueError) as exc:
+        if device == "cpu":
+            raise
+        logger.warning("faster-whisper on %s failed (%s) — freeing all and retrying",
+                       device, exc)
+        _evict_fw(keep=set())
+        try:
+            _fw_models[name] = WhisperModel(name, device=device, compute_type=compute)
+        except (RuntimeError, ValueError) as exc2:
+            logger.warning("still failing (%s) — cpu int8", exc2)
+            _fw_models[name] = WhisperModel(name, device="cpu", compute_type="int8")
     return _fw_models[name]
 
 
@@ -131,62 +183,113 @@ def _get_hf_pipe(model_id: str, cfg: LyricsConfig):
         return _hf_pipes[model_id]
     from transformers import pipeline
 
-    device: int | str = -1
-    if cfg.whisper_device.startswith("cuda"):
-        device = 0
-    logger.info("loading transformers ASR model=%s device=%s", model_id, device)
+    device = cfg.torch_device()
     kwargs: dict[str, Any] = {"model": model_id}
+    if device.startswith("cuda"):
+        import torch
+
+        kwargs["torch_dtype"] = torch.float16
     if cfg.hf_token:
         kwargs["token"] = cfg.hf_token
-    _hf_pipes[model_id] = pipeline(
-        "automatic-speech-recognition", device=device, **kwargs
-    )
+    logger.info("loading transformers ASR model=%s device=%s", model_id, device)
+    _hf_pipes[model_id] = pipeline("automatic-speech-recognition", device=device, **kwargs)
     return _hf_pipes[model_id]
 
 
-def _chunk_spans(duration: float, length: float, overlap: float) -> list[tuple[float, float]]:
-    spans: list[tuple[float, float]] = []
-    start = 0.0
-    step = max(1.0, length - overlap)
-    while start < duration:
-        spans.append((start, min(duration, start + length)))
-        if start + length >= duration:
-            break
-        start += step
-    return spans
+# ── language ID (A1) ──────────────────────────────────────────────────────
+
+def pick_language(
+    detected: str, prob: float, all_probs: list[tuple[str, float]],
+    candidates: tuple[str, ...],
+) -> tuple[str, float]:
+    """Bias Whisper LID toward the languages we serve.
+
+    Pure function (unit-tested). Returns (language, probability)."""
+    if not candidates or detected in candidates:
+        return detected, prob
+    probs = dict(all_probs)
+    best = max(candidates, key=lambda c: probs.get(c, 0.0))
+    best_p = probs.get(best, 0.0)
+    if prob >= _LID_OVERRIDE_PROB and prob >= _LID_OVERRIDE_RATIO * best_p:
+        return detected, prob
+    logger.info("lid: %s (%.2f) outside candidates → %s (%.2f)", detected, prob, best, best_p)
+    return best, best_p
 
 
-def _audible_spans(
-    vocal_path: Path, duration: float, length: float, overlap: float, threshold: float
-) -> list[tuple[float, float]]:
-    """Drop near-silent (instrumental) windows by vocal-stem RMS energy."""
+def detect_language(y: np.ndarray, cfg: LyricsConfig) -> tuple[str | None, float]:
+    """Vote over up to 4 voiced 30 s windows of the stem."""
     try:
-        import librosa
-        import numpy as np
-
-        y, sr = librosa.load(str(vocal_path), sr=16000, mono=True)
-        spans = _chunk_spans(duration, length, overlap)
-        keep: list[tuple[float, float]] = []
-        for s, e in spans:
-            seg = y[int(s * sr):int(e * sr)]
-            rms = float(np.sqrt(np.mean(seg ** 2))) if len(seg) else 0.0
-            if rms >= threshold:
-                keep.append((s, e))
-        if not keep:
-            logger.info("asr: all chunks below RMS %.3f — keeping loudest", threshold)
-            rms_all = [
-                (float(np.sqrt(np.mean(y[int(s * sr):int(e * sr)] ** 2)))
-                 if int(e * sr) > int(s * sr) else 0.0, (s, e))
-                for s, e in spans
-            ]
-            rms_all.sort(reverse=True)
-            keep = [rms_all[0][1]] if rms_all else spans
-        logger.info("asr: %d/%d chunks audible", len(keep), len(spans))
-        return keep
+        model = _get_fw_model(cfg.lid_model, cfg)
+        # voiced audio only (energy gate on the stem, ≤ 120 s), then 4 votes
+        voiced = [y[int(s * SR):int(e * SR)] for s, e in voiced_windows(y, 30.0)]
+        clip = np.concatenate(voiced)[: 120 * SR] if voiced else y
+        lang, prob, all_probs = model.detect_language(
+            audio=clip, vad_filter=False,
+            language_detection_segments=4, language_detection_threshold=0.5,
+        )
+        lang, prob = pick_language(lang, float(prob), list(all_probs), cfg.lang_candidates)
+        logger.info("lid: language=%s p=%.2f (model=%s)", lang, prob, cfg.lid_model)
+        return lang, prob
     except Exception as exc:
-        logger.debug("rms gating unavailable (%s) — keeping all chunks", exc)
-        return _chunk_spans(duration, length, overlap)
+        logger.warning("language detection failed (%s) — model decides", exc)
+        return None, 0.0
 
+
+# ── voiced windows ────────────────────────────────────────────────────────
+# Silero VAD is trained on SPEECH and misses sustained singing (measured: it
+# marked 41 s of a 183 s ballad as voiced and Whisper lost half the lyrics).
+# The input is already an isolated vocal stem, so plain energy is the right
+# detector: instrumental stretches are near-silent there.
+
+def voiced_windows(y: np.ndarray, max_len: float, *, hop_s: float = 0.05,
+                   rel_db: float = 35.0, floor_db: float = -50.0,
+                   bridge_s: float = 0.8, min_s: float = 0.3, pad_s: float = 0.2,
+                   ) -> list[tuple[float, float]]:
+    """Energy-gated voiced spans of the stem packed into windows ≤ max_len s.
+
+    A frame is voiced when its RMS is within ``rel_db`` of the loud (95th
+    percentile) level and above ``floor_db`` dBFS. Gaps < ``bridge_s`` are
+    bridged, blips < ``min_s`` dropped, spans padded by ``pad_s``. Pure
+    numpy (unit-tested)."""
+    hop = max(1, int(hop_s * SR))
+    n = len(y) // hop
+    if n == 0:
+        return []
+    frames = y[: n * hop].reshape(n, hop)
+    rms = np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1)) + 1e-10
+    db = 20 * np.log10(rms)
+    thr = max(floor_db, float(np.percentile(db, 95)) - rel_db)
+    active = db > thr
+    spans: list[list[float]] = []
+    i = 0
+    while i < n:
+        if active[i]:
+            j = i
+            while j < n and active[j]:
+                j += 1
+            s, e = i * hop_s, j * hop_s
+            if spans and s - spans[-1][1] < bridge_s:
+                spans[-1][1] = e
+            else:
+                spans.append([s, e])
+            i = j
+        else:
+            i += 1
+    dur = len(y) / SR
+    spans = [[max(0.0, s - pad_s), min(dur, e + pad_s)] for s, e in spans if e - s >= min_s]
+    windows: list[tuple[float, float]] = []
+    for s, e in spans:
+        while e - s > max_len:  # long voiced run → hard split
+            windows.append((s, s + max_len))
+            s += max_len
+        if windows and e - windows[-1][0] <= max_len and s - windows[-1][1] < 1.5:
+            windows[-1] = (windows[-1][0], e)
+        else:
+            windows.append((s, e))
+    return [(round(s, 3), round(e, 3)) for s, e in windows]
+
+
+# ── post-processing ───────────────────────────────────────────────────────
 
 def _drop_repeat_loops(words: list[dict[str, Any]], n: int = 4) -> list[dict[str, Any]]:
     """Drop exact n-gram repeats back-to-back (Whisper music hallucination)."""
@@ -209,11 +312,9 @@ def _drop_repeat_loops(words: list[dict[str, Any]], n: int = 4) -> list[dict[str
     return out
 
 
-def _dedupe_seams(
-    words: list[dict[str, Any]], overlap: float
-) -> list[dict[str, Any]]:
-    """Overlapping windows re-decode the seam — drop words starting inside the
-    previous word's span (same timebase, ~overlap tolerance)."""
+def _dedupe_seams(words: list[dict[str, Any]], overlap: float = 0.0) -> list[dict[str, Any]]:
+    """Drop words starting inside the previous word's span (window seams,
+    duplicated decodes). ``overlap`` kept for call compatibility."""
     out: list[dict[str, Any]] = []
     for w in sorted(words, key=lambda x: (x["timestamp"], x.get("end", 0))):
         if out and w["timestamp"] < out[-1].get("end", out[-1]["timestamp"]) - 0.05:
@@ -222,140 +323,122 @@ def _dedupe_seams(
     return out
 
 
-def _transcribe_fw(
-    vocal_path: Path, lang_hint: str | None, spans: list[tuple[float, float]],
-    model_name: str, cfg: LyricsConfig,
-    on_chunk: Callable[[int], None] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
-    import tempfile
+# ── runtimes ──────────────────────────────────────────────────────────────
 
-    import soundfile as sf
-    import librosa
+def _transcribe_fw(
+    y: np.ndarray, lang: str | None, model_name: str, cfg: LyricsConfig,
+    on_progress: Callable[[float], None] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    from faster_whisper import BatchedInferencePipeline
 
     model = _get_fw_model(model_name, cfg)
-    y_full, sr_full = librosa.load(str(vocal_path), sr=16000, mono=True)
+    pipe = BatchedInferencePipeline(model)
+    fine_tune = "/" in model_name  # HF id or local CT2 conversion dir
+    prompt = _INITIAL_PROMPTS.get(lang or "")
+    duration = max(1e-6, len(y) / SR)
+    # Indic scripts are token-dense: shorter windows avoid the 448-token cap.
+    chunk = 30 if lang in (None, "en") else 20
+    windows = voiced_windows(y, float(chunk))
+    if not windows:
+        return [], [], lang
+    segments, info = pipe.transcribe(
+        y,
+        language=lang,
+        task="transcribe",
+        batch_size=cfg.asr_batch_size,
+        beam_size=cfg.asr_beam_size,
+        word_timestamps=True,
+        clip_timestamps=[{"start": s, "end": e} for s, e in windows],
+        chunk_length=chunk,
+        no_repeat_ngram_size=3,
+        temperature=[0.0, 0.2, 0.4],
+        compression_ratio_threshold=2.4,
+        log_prob_threshold=-1.0,
+        no_speech_threshold=0.6,
+        # Script prompt only for stock multilingual models (stops Devanagari /
+        # Malayalam drifting into romanisation). Fine-tunes are already
+        # language-locked, and a prompt can be echoed back as a "lyric" in a
+        # quiet window — measured with the hi fine-tune.
+        initial_prompt=None if fine_tune else prompt,
+    )
     words: list[dict[str, Any]] = []
     raw_lines: list[dict[str, Any]] = []
-    detected: str | None = None
-    for i, (s, e) in enumerate(spans):
-        seg = y_full[int(s * sr_full):int(e * sr_full)]
-        if not len(seg):
+    for segm in segments:
+        text = (segm.text or "").replace("\ufffd", "").strip()
+        if prompt and text == prompt:  # echoed prompt, not a lyric
             continue
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            sf.write(tmp.name, seg, 16000)
-            chunk_path = tmp.name
-        try:
-            segments, info = model.transcribe(
-                chunk_path,
-                word_timestamps=True,
-                language=lang_hint,
-                task="transcribe",
-                vad_filter=True,
-                beam_size=5,
-                condition_on_previous_text=False,
-                no_repeat_ngram_size=3,
-                hallucination_silence_threshold=2.0,
-                chunk_length=cfg.asr_chunk_length_s,
-                vad_parameters={"min_silence_duration_ms": 1000, "speech_pad_ms": 200},
-                initial_prompt=_INITIAL_PROMPTS.get(lang_hint or ""),
-            )
-            detected = detected or getattr(info, "language", None)
-            for segm in segments:
-                text = (segm.text or "").strip()
-                if text:
-                    raw_lines.append({
-                        "timestamp": round(s + float(segm.start or 0.0), 3),
-                        "end": round(s + float(segm.end or 0.0), 3),
-                        "text": text,
-                    })
-                for w in segm.words or []:
-                    token = (w.word or "").strip()
-                    if token:
-                        words.append({
-                            "timestamp": round(s + float(w.start or 0.0), 3),
-                            "end": round(s + float(w.end or 0.0), 3),
-                            "word": token,
-                        })
-        finally:
-            try:
-                Path(chunk_path).unlink(missing_ok=True)
-            except OSError:
-                pass
-        if on_chunk:
-            on_chunk(i + 1)
-    return words, raw_lines, detected
+        if text:
+            raw_lines.append({
+                "timestamp": round(float(segm.start or 0.0), 3),
+                "end": round(float(segm.end or 0.0), 3),
+                "text": text,
+            })
+        for w in segm.words or []:
+            # word timestamps split multi-byte (Malayalam/Devanagari) tokens
+            # at byte boundaries → U+FFFD fragments; drop them
+            token = (w.word or "").replace("\ufffd", "").strip()
+            if token:
+                words.append({
+                    "timestamp": round(float(w.start or 0.0), 3),
+                    "end": round(float(w.end or 0.0), 3),
+                    "word": token,
+                    "probability": round(float(getattr(w, "probability", 0.0) or 0.0), 3),
+                })
+        if on_progress:
+            on_progress(min(1.0, float(segm.end or 0.0) / duration))
+    return words, raw_lines, getattr(info, "language", None) or lang
 
 
 def _transcribe_hf(
-    vocal_path: Path, lang_hint: str | None, spans: list[tuple[float, float]],
-    model_id: str, cfg: LyricsConfig,
-    on_chunk: Callable[[int], None] | None = None,
+    y: np.ndarray, lang: str | None, model_id: str, cfg: LyricsConfig,
+    on_progress: Callable[[float], None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
-    import tempfile
-
-    import soundfile as sf
-    import librosa
-
     pipe = _get_hf_pipe(model_id, cfg)
-    lang_3 = {"hi": "hin", "ml": "mal"}.get(lang_hint or "", None)
-    y_full, _ = librosa.load(str(vocal_path), sr=16000, mono=True)
+    windows = voiced_windows(y, float(min(30, max(10, cfg.asr_chunk_length_s + 8))))
     words: list[dict[str, Any]] = []
     raw_lines: list[dict[str, Any]] = []
-    for i, (s, e) in enumerate(spans):
-        seg = y_full[int(s * 16000):int(e * 16000)]
+    for i, (s, e) in enumerate(windows):
+        seg = y[int(s * SR):int(e * SR)]
         if not len(seg):
             continue
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            sf.write(tmp.name, seg, 16000)
-            chunk_path = tmp.name
-        try:
-            generate_kwargs: dict[str, Any] = {"task": "transcribe"}
-            if lang_hint:
-                generate_kwargs["language"] = lang_hint
-            out = pipe(
-                chunk_path,
-                chunk_length_s=cfg.asr_chunk_length_s,
-                generate_kwargs=generate_kwargs,
-                return_timestamps="word" if lang_3 else True,
-            )
-            text = (out.get("text") or "").strip() if isinstance(out, dict) else ""
-            if text:
-                raw_lines.append({"timestamp": round(s, 3), "end": round(e, 3), "text": text})
-            for ch in (out.get("chunks") or [] if isinstance(out, dict) else []):
-                ts = ch.get("timestamp")
-                tok = (ch.get("text") or "").strip()
-                if not tok or not ts:
-                    continue
-                words.append({
-                    "timestamp": round(s + float(ts[0] or 0.0), 3),
-                    "end": round(s + float(ts[1] or ts[0] or 0.0), 3),
-                    "word": tok,
-                })
-        finally:
-            try:
-                Path(chunk_path).unlink(missing_ok=True)
-            except OSError:
-                pass
-        if on_chunk:
-            on_chunk(i + 1)
-    if not words:  # pipeline gave segment text only — split evenly per chunk
-        for line in raw_lines:
-            toks = line["text"].split()
-            per = max(0.2, (line["end"] - line["timestamp"]) / max(1, len(toks)))
-            for i, tok in enumerate(toks):
-                st = line["timestamp"] + i * per
-                words.append({"timestamp": round(st, 3), "end": round(st + per, 3), "word": tok})
-    return words, raw_lines, lang_hint
+        generate_kwargs: dict[str, Any] = {"task": "transcribe"}
+        if lang:
+            generate_kwargs["language"] = lang
+        out = pipe({"raw": seg, "sampling_rate": SR},
+                   generate_kwargs=generate_kwargs, return_timestamps="word")
+        text = (out.get("text") or "").strip() if isinstance(out, dict) else ""
+        if text:
+            raw_lines.append({"timestamp": round(s, 3), "end": round(e, 3), "text": text})
+        chunk_words = []
+        for ch in (out.get("chunks") or [] if isinstance(out, dict) else []):
+            ts = ch.get("timestamp")
+            tok = (ch.get("text") or "").strip()
+            if not tok or not ts:
+                continue
+            chunk_words.append({
+                "timestamp": round(s + float(ts[0] or 0.0), 3),
+                "end": round(s + float(ts[1] or ts[0] or 0.0), 3),
+                "word": tok,
+            })
+        if not chunk_words and text:  # segment text only — split evenly
+            toks = text.split()
+            per = max(0.2, (e - s) / max(1, len(toks)))
+            chunk_words = [{"timestamp": round(s + k * per, 3),
+                            "end": round(s + (k + 1) * per, 3), "word": t}
+                           for k, t in enumerate(toks)]
+        words.extend(chunk_words)
+        if on_progress:
+            on_progress((i + 1) / max(1, len(windows)))
+    return words, raw_lines, lang
 
 
 def _transcribe_conformer(
-    vocal_path: Path, lang_hint: str | None, cfg: LyricsConfig,
+    y: np.ndarray, lang_hint: str | None, cfg: LyricsConfig,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     """ai4bharat indic-conformer (MIT, gated). ``model(wav, lang, decoding)``
-    API verified against the model card. CTC decode; word timings unavailable
-    → even-split lines (Phase 4 upgrades them)."""
+    API per the model card. CTC decode; no word timings → even split (the
+    aligner upgrades them)."""
     import torch
-    import torchaudio
     from transformers import AutoModel
 
     key = "ai4bharat/indic-conformer-600m-multilingual"
@@ -365,25 +448,16 @@ def _transcribe_conformer(
             key, trust_remote_code=True, token=cfg.hf_token or None
         )
     model = _conformer_models[key]
-    wav, sr = torchaudio.load(str(vocal_path))
-    wav = torch.mean(wav, dim=0, keepdim=True)
-    if sr != 16000:
-        wav = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)(wav)
+    wav = torch.from_numpy(y).unsqueeze(0)
     lang = lang_hint if lang_hint in ("hi", "ml") else "hi"
     with torch.no_grad():
         text = model(wav, lang, "ctc")
     text = (text[0] if isinstance(text, (list, tuple)) else str(text)).strip()
-    try:
-        import librosa
-
-        duration = float(librosa.get_duration(path=str(vocal_path)))
-    except Exception:
-        duration = 0.0
+    duration = len(y) / SR
     toks = text.split()
-    words = []
     per = duration / max(1, len(toks)) if duration else 0.4
-    for i, tok in enumerate(toks):
-        words.append({"timestamp": round(i * per, 3), "end": round((i + 1) * per, 3), "word": tok})
+    words = [{"timestamp": round(i * per, 3), "end": round((i + 1) * per, 3), "word": tok}
+             for i, tok in enumerate(toks)]
     lines = [{"timestamp": 0.0, "end": round(duration, 3), "text": text}] if text else []
     return words, lines, lang
 
@@ -392,66 +466,52 @@ def transcribe_asr(
     vocal_path: str | Path, language: str | None = None,
     cfg: LyricsConfig | None = None,
     progress: Progress = None,
+    audio: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    """Chunked, music-tuned ASR over an isolated vocal stem (16 kHz mono).
+    """Music-tuned ASR over an isolated vocal stem (16 kHz mono).
 
-    ``progress`` receives ``(stage, fraction)`` updates for model download /
-    load and per-chunk transcription, so the UI keeps moving on long songs.
+    ``audio`` (optional) is the already-decoded stem; ``progress`` receives
+    ``(stage, fraction)`` updates for LID, model load and transcription.
     """
     from lyrics_transcriber import _lines_from_words  # reuse line grouping
 
     cfg = cfg or LyricsConfig.from_env()
-    vocal_path = Path(vocal_path)
-    lang_hint = (language or "").strip().lower() or None
-    model_name = cfg.asr_model_for(lang_hint)
+    lang = (language or "").strip().lower() or None
     t0 = time.time()
-    logger.info("asr model=%s language=%s chunk=%ds+%ds",
-                model_name, lang_hint or "auto",
-                cfg.asr_chunk_length_s, cfg.asr_chunk_overlap_s)
+    model_name = cfg.asr_model_for(lang)
     try:
-        try:
-            import librosa
+        y = audio if audio is not None else load_stem(vocal_path)
+        lang_prob: float | None = None
+        if lang is None:
+            _report(progress, "detecting_language", _PCT_MODEL_READY - 0.04)
+            lang, lang_prob = detect_language(y, cfg)
+            model_name = cfg.asr_model_for(lang)
+        logger.info("asr model=%s language=%s", model_name, lang or "auto")
 
-            duration = float(librosa.get_duration(path=str(vocal_path)))
-        except Exception:
-            duration = 0.0
-        spans = _audible_spans(
-            vocal_path, duration or 1.0,
-            float(cfg.asr_chunk_length_s), float(cfg.asr_chunk_overlap_s),
-            cfg.asr_rms_threshold,
-        )
-        total = max(1, len(spans))
-
-        def _chunk_done(done: int) -> None:
-            span = _PCT_TRANSCRIBE_END - _PCT_TRANSCRIBE
+        def _progress(frac: float) -> None:
             _report(progress, "transcribing",
-                    _PCT_TRANSCRIBE + span * (done / total))
+                    _PCT_TRANSCRIBE + (_PCT_TRANSCRIBE_END - _PCT_TRANSCRIBE) * frac)
 
         _announce_model(model_name, progress)
         if model_name == "ai4bharat/indic-conformer-600m-multilingual":
-            words, raw_lines, detected = _transcribe_conformer(vocal_path, lang_hint, cfg)
-            _chunk_done(total)
-        elif "/" in model_name:  # HF transformers fine-tune
-            words, raw_lines, detected = _transcribe_hf(
-                vocal_path, lang_hint, spans, model_name, cfg, on_chunk=_chunk_done
-            )
-        else:  # stock faster-whisper / CTranslate2 id
-            words, raw_lines, detected = _transcribe_fw(
-                vocal_path, lang_hint, spans, model_name, cfg, on_chunk=_chunk_done
-            )
+            words, raw_lines, detected = _transcribe_conformer(y, lang, cfg)
+        elif "/" in model_name and not Path(model_name).is_dir():  # HF fine-tune
+            words, raw_lines, detected = _transcribe_hf(y, lang, model_name, cfg, _progress)
+        else:  # faster-whisper / CTranslate2 name or local dir
+            words, raw_lines, detected = _transcribe_fw(y, lang, model_name, cfg, _progress)
         _report(progress, "transcribing", _PCT_TRANSCRIBE_END)
-        words = _dedupe_seams(words, float(cfg.asr_chunk_overlap_s))
+        words = _dedupe_seams(words)
         words = _drop_repeat_loops(words)
         lines = _lines_from_words(words, raw_lines)
         logger.info("asr done model=%s words=%d lines=%d in %.1fs",
                     model_name, len(words), len(lines), time.time() - t0)
         return {
-            "lyrics": words, "lines": lines,
-            "language": detected or lang_hint,
+            "lyrics": words, "lines": lines, "segments": raw_lines,
+            "language": detected or lang, "language_prob": lang_prob,
             "error": None, "model": model_name,
             "source": "asr",
         }
     except Exception as exc:
         logger.exception("ASR failed model=%s", model_name)
-        return {"lyrics": [], "lines": [], "language": None,
+        return {"lyrics": [], "lines": [], "segments": [], "language": lang,
                 "error": str(exc)[:500], "model": model_name, "source": "asr"}

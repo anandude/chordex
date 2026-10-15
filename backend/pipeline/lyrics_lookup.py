@@ -20,6 +20,7 @@ import difflib
 import logging
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -39,6 +40,13 @@ _ARTIST_MIN_RATIO = 0.5
 
 # ── metadata ──────────────────────────────────────────────────────────────
 
+_SITE_SUFFIX = re.compile(
+    r"\s*[-–—|:]\s*(pagal\w*|mr-?jatt\w*|djpunjab\w*|songs?\.?pk|webmusic\w*|"
+    r"downloadming\w*|[\w-]+\.(com|net|in|org|pk|me|io|cc|info))\s*$",
+    re.IGNORECASE,
+)
+
+
 def _tags_from_file(audio_path: Path) -> dict[str, str]:
     """ID3/metadata tags via mutagen (optional dep — missing file types ok)."""
     meta: dict[str, str] = {}
@@ -51,7 +59,10 @@ def _tags_from_file(audio_path: Path) -> dict[str, str]:
         for key in ("title", "artist", "album"):
             vals = audio.get(key)
             if vals:
-                meta[key] = str(vals[0]).strip()
+                # download sites append themselves: "Song - PagalNew"
+                val = _SITE_SUFFIX.sub("", str(vals[0])).strip()
+                if val:
+                    meta[key] = val
     except ImportError:
         logger.debug("mutagen not installed — filename heuristics only")
     except Exception as exc:
@@ -59,11 +70,37 @@ def _tags_from_file(audio_path: Path) -> dict[str, str]:
     return meta
 
 
+_FILENAME_NOISE = re.compile(
+    r"\b(\d{2,3}\s*kbps|official( music| lyric(al)?)? video|lyrics?|lyrical|full song|"
+    r"audio|video|hd|hq|mp3|320|128)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_name(text: str) -> str:
+    # download-site tags: "(mp3.pm)", "[PagalWorld.com]"
+    text = re.sub(r"[(\[]\s*(?:[\w-]+\.)+[a-z]{2,4}\s*[)\]]", " ", text, flags=re.I)
+    # underscored contractions: "Can_t_Help" → "Can't Help"
+    text = re.sub(r"(?<=[A-Za-z])_(t|s|ll|re|ve|m|d)(?=_|$)", r"'\1", text)
+    text = re.sub(r"[_]+", " ", text)
+    text = re.sub(r"\[[^\]]*\]", " ", text)  # [Official Video], [320kbps]
+    text = _FILENAME_NOISE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip(" -–—.")
+
+
 def _tags_from_filename(audio_path: Path) -> dict[str, str]:
-    """Heuristics: 'Artist - Title.ext', 'Title (Film).ext', '01 Title.ext'."""
+    """Heuristics: 'Artist - Title.ext', 'Title (Film).ext', '01 Title.ext',
+    and download-site names whose fields are separated by 2+ spaces
+    ('Title  Film  Singer  Composer.ext' → title = first field only; the other
+    fields are ambiguous, and a wrong artist would fail the LRCLIB guard)."""
     stem = audio_path.stem.strip()
     meta: dict[str, str] = {}
-    m = re.match(r"^\s*(.+?)\s*[-–—]\s*(.+?)\s*$", stem)
+    fields = [f for f in re.split(r"\s{2,}|\s\|\s", stem) if f.strip()]
+    if len(fields) > 1:
+        stem = fields[0]
+    stem = _clean_name(stem)
+    m = re.match(r"^\s*(.+?)\s+[-–—]\s+(.+?)\s*$", stem) or re.match(
+        r"^\s*([^-–—]+?)\s*[-–—]\s*([^-–—]+?)\s*$", stem)
     if m:
         meta["artist"] = m.group(1).strip()
         meta["title"] = m.group(2).strip()
@@ -82,10 +119,15 @@ def get_metadata(
     title_hint: str | None = None,
     artist_hint: str | None = None,
     album_hint: str | None = None,
+    filename: str | None = None,
 ) -> dict[str, str]:
-    """Precedence: (a) explicit UI fields, (b) file tags, (c) filename."""
+    """Precedence: (a) explicit UI fields, (b) file tags, (c) filename.
+
+    ``filename`` is the ORIGINAL upload name — uploads are stored as
+    ``audio.<ext>``, so the on-disk name carries no information.
+    """
     audio_path = Path(audio_path)
-    meta = _tags_from_filename(audio_path)
+    meta = _tags_from_filename(Path(filename) if filename else audio_path)
     meta.update({k: v for k, v in _tags_from_file(audio_path).items() if v})
     for key, hint in (("title", title_hint), ("artist", artist_hint), ("album", album_hint)):
         if hint and hint.strip():
@@ -110,22 +152,49 @@ def _get_json(url: str, params: dict[str, Any], cfg: LyricsConfig) -> Any | None
         f"{url}?{qs}" if qs else url,
         headers={"User-Agent": cfg.user_agent, "Accept": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=cfg.lrclib_timeout_s) as resp:
-            import json
+    import json
 
-            if resp.status != 200:
-                return None
-            return json.loads(resp.read().decode("utf-8", "replace"))
-    except Exception as exc:
-        logger.debug("lrclib request failed (%s)", exc)
-        return None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=cfg.lrclib_timeout_s) as resp:
+                if resp.status != 200:
+                    return None
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            # 404 = genuine miss; 429/5xx = transient → one short retry
+            if exc.code in (429, 500, 502, 503, 504) and attempt == 0:
+                retry = exc.headers.get("Retry-After") if exc.headers else None
+                delay = min(5.0, float(retry)) if retry and retry.isdigit() else 2.0
+                logger.warning("lrclib HTTP %s — retrying in %.0fs", exc.code, delay)
+                time.sleep(delay)
+                continue
+            if exc.code != 404:
+                logger.warning("lrclib request failed (%s)", exc)
+            return None
+        except Exception as exc:
+            logger.warning("lrclib request failed (%s)", exc)
+            return None
+    return None
 
 
 # ── matching ──────────────────────────────────────────────────────────────
 
 def _ratio(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def _artist_ratio(a: str, b: str) -> float:
+    """Order-insensitive: 'Palak Muchhal, Arijit Singh' vs 'Arijit Singh &
+    Palak Muchhal' is the same credit. Also accepts one credited artist
+    being contained in the other's list."""
+    def toks(x: str) -> list[str]:
+        return sorted(t for t in re.split(r"[^\w]+", x.lower()) if t and t not in {"and", "feat", "ft"})
+
+    ta, tb = toks(a), toks(b)
+    best = max(_ratio(a, b), _ratio(" ".join(ta), " ".join(tb)))
+    if ta and tb and (set(ta) <= set(tb) or set(tb) <= set(ta)):
+        best = max(best, 0.9)
+    return best
 
 
 def _accept(
@@ -149,7 +218,7 @@ def _accept(
             return False
     artist = meta.get("artist", "")
     if artist and candidate.get("artistName"):
-        if _ratio(artist, str(candidate["artistName"])) < _ARTIST_MIN_RATIO:
+        if _artist_ratio(artist, str(candidate["artistName"])) < _ARTIST_MIN_RATIO:
             return False
     return True
 
@@ -169,7 +238,7 @@ def _pick_best(
         if meta.get("title") and c.get("trackName"):
             score += _ratio(meta["title"], str(c["trackName"]))
         if meta.get("artist") and c.get("artistName"):
-            score += 0.5 * _ratio(meta["artist"], str(c["artistName"]))
+            score += 0.5 * _artist_ratio(meta["artist"], str(c["artistName"]))
         scored.append((score, c))
     if not scored:
         return None
@@ -281,6 +350,22 @@ def _plain_lines_even(plain: str, duration: float | None) -> list[dict[str, Any]
     return spread_lines(texts, duration)
 
 
+def script_language(text: str) -> str | None:
+    """Language from the dominant script of verified lyrics (LRCLIB has no
+    language field). Only the scripts we serve; Latin → None (ambiguous)."""
+    counts = {"hi": 0, "ml": 0, "ta": 0}
+    for ch in text:
+        o = ord(ch)
+        if 0x0900 <= o <= 0x097F:
+            counts["hi"] += 1
+        elif 0x0D00 <= o <= 0x0D7F:
+            counts["ml"] += 1
+        elif 0x0B80 <= o <= 0x0BFF:
+            counts["ta"] += 1
+    lang, n = max(counts.items(), key=lambda kv: kv[1])
+    return lang if n >= 10 else None
+
+
 # ── entry point ───────────────────────────────────────────────────────────
 
 def lookup_lyrics(
@@ -291,6 +376,7 @@ def lookup_lyrics(
     album: str | None = None,
     duration: float | None = None,
     cfg: LyricsConfig | None = None,
+    filename: str | None = None,
 ) -> dict[str, Any] | None:
     """Return ``{source, lines, lyrics, language, track}`` or None on miss.
 
@@ -301,7 +387,7 @@ def lookup_lyrics(
     if not cfg.lrclib_enabled:
         return None
     audio_path = Path(audio_path)
-    meta = get_metadata(audio_path, title, artist, album)
+    meta = get_metadata(audio_path, title, artist, album, filename)
     if not meta.get("title"):
         logger.info("lrclib: no title metadata — skipping lookup")
         return None
@@ -358,7 +444,7 @@ def lookup_lyrics(
         "source": "lrclib_synced" if synced else "lrclib_plain",
         "lines": lines,
         "lyrics": words_even_split(lines),
-        "language": None,
+        "language": script_language(" ".join(l["text"] for l in lines)),
         "track": {
             "trackName": candidate.get("trackName"),
             "artistName": candidate.get("artistName"),
