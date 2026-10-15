@@ -372,24 +372,55 @@ def test_roformer_checkpoint_resolution_offline():
 
 # ── Phase 4: alignment fallback + timebase ────────────────────────────────
 
-def test_alignment_fallback_timebase(tmp_path):
-    import soundfile as sf
+def test_alignment_timebase_with_synthetic_emissions(tmp_path, monkeypatch):
+    """Full align() path offline: LRCLIB-style timed line → per-word times
+    from the CTC path, on the stem's timebase (seconds from 0)."""
     import numpy as np
 
-    from pipeline.alignment import align
+    from pipeline import alignment
     from pipeline.config import LyricsConfig
 
-    sr = 16000
-    wav = tmp_path / "v.wav"
-    sf.write(str(wav), (0.1 * np.sin(2 * np.pi * 440 * np.arange(2 * sr) / sr)).astype("float32"), sr)
+    vocab = {"-": 0, "a": 1, "b": 2, "c": 3, "d": 4}
+    T = 100  # 2 s at 50 fps
+    lp = np.full((T, 5), np.log(0.025))
+    lp[:, 0] = np.log(0.9)
+    for f, c in [(20, 1), (25, 2), (50, 3), (55, 4)]:  # "ab" @0.4 s, "cd" @1.0 s
+        lp[f, :] = np.log(0.025)
+        lp[f, c] = np.log(0.9)
+    monkeypatch.setattr(alignment, "compute_emissions", lambda y, cfg: (lp, vocab))
+    monkeypatch.setattr(alignment, "_romanise",
+                        lambda w, l, v: {"ഹലോ": "ab", "ലോകം": "cd"}[w])
     lines = [{"timestamp": 0.2, "end": 1.8, "text": "ഹലോ ലോകം"}]
-    out = align(wav, lines=lines, language="ml",
-                cfg=LyricsConfig(alignment_enabled=True))
-    assert out["words"] and out["backend"] in ("even-split", "mms-ctc")
-    ts = [(w["timestamp"], w["end"]) for w in out["words"]]
-    assert ts[0][0] >= 0.0 and ts[-1][1] <= 2.0 + 1e-6  # chord timebase: s from 0
-    assert all(b[0] >= a[1] - 1e-6 or True for a, b in zip(ts, ts[1:]))
-    assert all(w["end"] - w["timestamp"] <= 4.0 for w in out["words"])  # ≤4 s sanity
+    out = alignment.align(tmp_path / "v.wav", lines=lines, language="ml",
+                          cfg=LyricsConfig(alignment_enabled=True),
+                          audio=np.zeros(2 * 16000, dtype=np.float32))
+    assert out["backend"] == "mms-fa"
+    w = out["words"]
+    assert [x["word"] for x in w] == ["ഹലോ", "ലോകം"]
+    assert (w[0]["timestamp"], w[1]["timestamp"]) == (0.4, 1.0)
+    assert w[0]["end"] <= w[1]["timestamp"] and w[1]["end"] <= 2.0
+    assert out["lines"][0]["timestamp"] == 0.4 and out["lines"][0]["w1"] == 1
+
+
+def test_alignment_untrusted_line_keeps_rough_timing(tmp_path, monkeypatch):
+    """Garbage evidence (uniform emissions) must not move words — the even
+    split / Whisper times survive instead of being scrambled."""
+    import numpy as np
+
+    from pipeline import alignment
+    from pipeline.config import LyricsConfig
+
+    vocab = {"-": 0, "a": 1, "b": 2, **{f"z{i}": i + 3 for i in range(25)}}  # 28 classes
+    monkeypatch.setattr(alignment, "compute_emissions",
+                        lambda y, cfg: (np.full((100, 28), np.log(1 / 28)), vocab))
+    monkeypatch.setattr(alignment, "_romanise", lambda w, l, v: "ab")
+    words = [{"word": "x", "timestamp": 0.3, "end": 0.6},
+             {"word": "y", "timestamp": 0.9, "end": 1.2}]
+    out = alignment.align(tmp_path / "v.wav", words=words, language="en",
+                          cfg=LyricsConfig(alignment_enabled=True),
+                          audio=np.zeros(2 * 16000, dtype=np.float32))
+    assert [(x["timestamp"], x["confidence"]) for x in out["words"]] == [
+        (0.3, None), (0.9, None)]
 
 
 # ── Phase 5 ───────────────────────────────────────────────────────────────

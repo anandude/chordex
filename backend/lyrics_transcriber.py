@@ -266,6 +266,20 @@ def transcribe_lyrics(
     # against a str, always read as "owned", and unlinked the user's upload at
     # the end of the job (breaking playback). The cache is meant to be reused.
 
+    _stem: list = []
+
+    def _stem_audio():
+        """Decode the 16 kHz stem once; ASR and alignment share the array."""
+        if not _stem:
+            from pipeline.asr import load_stem
+
+            try:
+                _stem.append(load_stem(vocal_path))
+            except Exception as exc:  # stages load (and report) it themselves
+                logger.warning("stem decode failed (%s)", exc)
+                _stem.append(None)
+        return _stem[0]
+
     try:
         # ── Phase 3: transcribe (miss only) ──
         if lookup_lines is None:
@@ -276,7 +290,8 @@ def transcribe_lyrics(
             # progress is threaded through so a first-run model download (or a
             # slow CPU decode) shows up as a moving stage instead of a stall
             asr_out = transcribe_asr(
-                vocal_path, language=lang_hint, cfg=cfg, progress=_report
+                vocal_path, language=lang_hint, cfg=cfg, progress=_report,
+                audio=_stem_audio(),
             )
             stages["transcription"] = round(_time.time() - t0, 2)
             models["asr"] = str(asr_out.get("model", ""))
@@ -318,36 +333,12 @@ def transcribe_lyrics(
                 words=words or None,
                 duration=duration,
                 cfg=cfg,
+                audio=_stem_audio(),
             )
             words = aligned.get("words", words)
-            if lookup_lines is None:
-                lines = aligned.get("lines", lines)
-            else:
-                # Lookup lines pre-date timing (stale cache, duration unknown
-                # at lookup time): regroup them from the aligned words so
-                # lines, words and the chord sheet share one timebase.
-                from pipeline.alignment import _lines_lack_timing
-
-                if lines and _lines_lack_timing(lines) and words:
-                    lines = _lines_from_words(
-                        [
-                            {
-                                "timestamp": w["timestamp"],
-                                "end": w.get("end", w["timestamp"]),
-                                "word": w.get("word", ""),
-                            }
-                            for w in words
-                        ],
-                        [
-                            {
-                                "timestamp": 0.0,
-                                "end": duration or 0.0,
-                                "text": " ".join(
-                                    w.get("word", "") for w in words
-                                ),
-                            }
-                        ],
-                    )
+            # aligned lines are timed from their words (w0..w1 index range),
+            # for LRCLIB and ASR alike — one timebase for lines, words, chords
+            lines = aligned.get("lines") or lines
             models["alignment"] = str(aligned.get("backend", ""))
             if aligned.get("error"):
                 logger.info("alignment note: %s", aligned["error"])
