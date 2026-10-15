@@ -45,8 +45,14 @@ class LyricsConfig:
     # Phase 3 — ASR
     whisper_model: str = "small"
     whisper_model_overrides_json: str = ""
-    whisper_device: str = "cpu"
-    whisper_compute_type: str = ""
+    whisper_device: str = "auto"  # auto | cpu | cuda (see pipeline/gpu.py)
+    whisper_compute_type: str = ""  # empty → float16 on cuda, int8 on cpu
+    # A1: language ID runs on the stem BEFORE model routing. Candidates bias
+    # detection toward the languages we serve (singing confuses ml↔ta); a
+    # non-candidate wins only when Whisper is very sure (see asr.py).
+    lid_model: str = "small"
+    lang_candidates: tuple[str, ...] = ("hi", "ml", "en")
+    asr_batch_size: int = 8
     asr_chunk_length_s: int = 12  # 10–15 s: Indic scripts are token-dense,
     asr_chunk_overlap_s: int = 2  # 30 s windows risk 448-token truncation
     asr_rms_threshold: float = 0.01  # skip near-silent chunks (instrumental)
@@ -69,9 +75,12 @@ class LyricsConfig:
     def from_env(cls) -> "LyricsConfig":
         overrides_raw = _env("WHISPER_MODEL_OVERRIDES", "")
         compute = _env("WHISPER_COMPUTE_TYPE", "")
-        device = _env("WHISPER_DEVICE", "cpu")
-        if not compute:
-            compute = "int8" if device == "cpu" else "float16"
+        device = _env("WHISPER_DEVICE", "auto").lower()
+        cands = tuple(
+            c.strip().lower()
+            for c in _env("LYRICS_LANG_CANDIDATES", "hi,ml,en").split(",")
+            if c.strip()
+        )
         sep = _env("LYRICS_SEPARATION_BACKEND", "demucs").lower()
         if _env("SEPARATE_VOCALS", "1").lower() in {"0", "false", "no", "off"}:
             sep = "none"
@@ -88,6 +97,9 @@ class LyricsConfig:
             whisper_model_overrides_json=overrides_raw,
             whisper_device=device,
             whisper_compute_type=compute,
+            lid_model=_env("LYRICS_LID_MODEL", "small"),
+            lang_candidates=cands,
+            asr_batch_size=int(_env("LYRICS_ASR_BATCH", "8")),
             asr_chunk_length_s=int(_env("LYRICS_ASR_CHUNK_S", "12")),
             asr_chunk_overlap_s=int(_env("LYRICS_ASR_OVERLAP_S", "2")),
             hf_token=_env("HF_TOKEN", ""),

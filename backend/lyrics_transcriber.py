@@ -224,6 +224,7 @@ def transcribe_lyrics(
         }
 
     lang_hint = (language or os.getenv("WHISPER_LANGUAGE", "").strip() or None)
+    lang_prob: float | None = None  # set when the language was auto-detected
 
     # ── Phase 2 first: the best transcription is the one you skip ──
     _report("fetching_lyrics", 0.05)
@@ -296,6 +297,7 @@ def transcribe_lyrics(
             words = asr_out.get("lyrics", [])
             lines = asr_out.get("lines", [])
             lang_hint = asr_out.get("language") or lang_hint
+            lang_prob = asr_out.get("language_prob")
             raw_text: str | None = None
         else:
             words = []
@@ -376,6 +378,7 @@ def transcribe_lyrics(
             "lyrics": words,
             "lines": lines,
             "language": lang_hint,
+            "language_prob": lang_prob,
             "source": source,
             "cleaned": cleaned_flag,
             "stages": stages,

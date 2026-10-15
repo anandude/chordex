@@ -113,12 +113,9 @@ def test_metadata_filename_heuristics(tmp_path):
 
 # ── Phase 3: asr helpers ──────────────────────────────────────────────────
 
-def test_chunk_spans_and_seam_dedupe():
-    from pipeline.asr import _chunk_spans, _dedupe_seams, _drop_repeat_loops
+def test_seam_dedupe_and_repeat_loops():
+    from pipeline.asr import _dedupe_seams, _drop_repeat_loops
 
-    spans = _chunk_spans(30.0, 12.0, 2.0)
-    assert spans[0] == (0.0, 12.0) and spans[-1][1] == 30.0
-    assert all(e - s <= 12.0 for s, e in spans)
     words = [
         {"timestamp": 0.0, "end": 1.0, "word": "a"},
         {"timestamp": 0.5, "end": 1.5, "word": "a"},  # seam re-decode
@@ -193,16 +190,16 @@ def test_asr_announces_download_vs_load(monkeypatch):
 
 
 def test_transcribe_asr_reports_model_and_chunk_progress(tmp_path, monkeypatch):
+    import numpy as np
+
     from pipeline import asr
     from pipeline.config import LyricsConfig
 
     monkeypatch.setattr(asr, "repo_cache_state", lambda repo: (True, 1.0))
-    monkeypatch.setattr(asr, "_audible_spans",
-                        lambda *a, **k: [(0.0, 12.0), (12.0, 24.0)])
 
-    def fake_hf(path, lang, spans, model, cfg, on_chunk=None):
-        for i in range(len(spans)):
-            on_chunk(i + 1)
+    def fake_hf(y, lang, model, cfg, on_progress=None):
+        on_progress(0.5)
+        on_progress(1.0)
         return (
             [{"timestamp": 0.0, "end": 1.0, "word": "la"}],
             [{"timestamp": 0.0, "end": 1.0, "text": "la"}],
@@ -215,6 +212,7 @@ def test_transcribe_asr_reports_model_and_chunk_progress(tmp_path, monkeypatch):
         tmp_path / "vocals.wav", language="hi",
         cfg=LyricsConfig(whisper_model="small", cache_dir=str(tmp_path)),
         progress=lambda stage, pct: events.append((stage, pct)),
+        audio=np.zeros(16000, dtype=np.float32),
     )
 
     assert [s for s, _ in events] == ["loading_model", "transcribing",
@@ -222,6 +220,48 @@ def test_transcribe_asr_reports_model_and_chunk_progress(tmp_path, monkeypatch):
     assert events[-1][1] == 0.78  # hands the 0.8 alignment band back on time
     assert out["model"] == "adalat-ai/whisper-medium-hi-high-lr"
     assert out["lines"][0]["text"] == "la"
+
+
+def test_auto_language_is_detected_before_model_routing(tmp_path, monkeypatch):
+    """A1: with no hint, LID runs first so hi/ml get their fine-tunes (the old
+    flow routed 'auto' to the default model and the Indic models never ran)."""
+    import numpy as np
+
+    from pipeline import asr
+    from pipeline.config import LyricsConfig
+
+    monkeypatch.setattr(asr, "repo_cache_state", lambda repo: (True, 1.0))
+    monkeypatch.setattr(asr, "detect_language", lambda y, cfg: ("ml", 0.7))
+    seen = {}
+
+    def fake_hf(y, lang, model, cfg, on_progress=None):
+        seen["model"], seen["lang"] = model, lang
+        return [], [], lang
+
+    monkeypatch.setattr(asr, "_transcribe_hf", fake_hf)
+    out = asr.transcribe_asr(
+        tmp_path / "v.wav", language=None,
+        cfg=LyricsConfig(whisper_model="small", cache_dir=str(tmp_path)),
+        audio=np.zeros(16000, dtype=np.float32),
+    )
+    assert seen == {"model": "adalat-ai/whisper-medium-ml-rmft", "lang": "ml"}
+    assert out["language"] == "ml" and out["language_prob"] == 0.7
+
+
+def test_pick_language_biases_toward_candidates():
+    from pipeline.asr import pick_language
+
+    cands = ("hi", "ml", "en")
+    # Malayalam singing misread as Tamil → best candidate wins
+    probs = [("ta", 0.55), ("ml", 0.30), ("hi", 0.05)]
+    assert pick_language("ta", 0.55, probs, cands) == ("ml", 0.30)
+    # Whisper very sure about a non-candidate → keep it
+    probs = [("es", 0.95), ("en", 0.02)]
+    assert pick_language("es", 0.95, probs, cands) == ("es", 0.95)
+    # candidate detected → untouched
+    assert pick_language("hi", 0.6, [("hi", 0.6)], cands) == ("hi", 0.6)
+    # no candidates configured → raw Whisper answer
+    assert pick_language("ta", 0.5, probs, ()) == ("ta", 0.5)
 
 
 def test_job_timeout_covers_first_run_downloads(monkeypatch):

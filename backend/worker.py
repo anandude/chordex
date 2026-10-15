@@ -168,6 +168,8 @@ def run_lyrics(
             lyrics["lyrics"] = lyrics_out.get("lyrics", [])
             lyrics["lyric_lines"] = lyrics_out.get("lines", [])
             lyrics["lyrics_language"] = lyrics_out.get("language")
+            if lyrics_out.get("language_prob") is not None:
+                lyrics["lyrics_language_prob"] = round(lyrics_out["language_prob"], 3)
             lyrics["lyrics_source"] = lyrics_out.get("source", "asr")
             if lyrics_out.get("stages"):
                 lyrics["lyrics_stages"] = lyrics_out["stages"]
