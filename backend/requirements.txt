@@ -75,3 +75,7 @@ mir_eval>=0.8
 # YouTube now needs for its JS challenges (with deno/node on PATH). yt-dlp
 # breaks whenever YouTube changes — upgrade it first if links stop working.
 yt-dlp[default]>=2026.8.19
+# English-letter (Hinglish/Manglish) lyrics: native script → IAST, then
+# pipeline/romanise.py maps to everyday spelling. AGPL-3.0 — fine for
+# personal use; review before distributing the app.
+aksharamukha==2.3

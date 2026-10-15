@@ -40,6 +40,8 @@ export interface SheetWord {
   end: number;
   segs: SheetSeg[];
   roman?: string;
+  /** `roman` split across `segs` at the same syllable boundaries. */
+  roman_segs?: string[];
 }
 
 export type SheetRow =
