@@ -136,11 +136,29 @@ def load_stem(path: str | Path) -> np.ndarray:
     return y.astype(np.float32)
 
 
+def _evict_fw(keep: set[str]) -> None:
+    """Free faster-whisper models not in ``keep`` (CTranslate2 releases VRAM
+    when the model object is collected)."""
+    import gc
+
+    for name in [n for n in _fw_models if n not in keep]:
+        logger.info("unloading faster-whisper model=%s", name)
+        del _fw_models[name]
+    gc.collect()
+
+
 def _get_fw_model(name: str, cfg: LyricsConfig):
+    """Load (or reuse) a faster-whisper model.
+
+    VRAM budget (4 GB GTX 1650): only the language-ID model and ONE ASR
+    model stay resident — a hi job followed by an ml job used to stack two
+    medium models next to demucs and the aligner and run out of memory.
+    """
     if name in _fw_models:
         return _fw_models[name]
     from faster_whisper import WhisperModel
 
+    _evict_fw(keep={cfg.lid_model})
     device = whisper_device(cfg.whisper_device)
     compute = whisper_compute_type(device, cfg.whisper_compute_type)
     logger.info("loading faster-whisper model=%s device=%s compute=%s", name, device, compute)
@@ -149,8 +167,14 @@ def _get_fw_model(name: str, cfg: LyricsConfig):
     except (RuntimeError, ValueError) as exc:
         if device == "cpu":
             raise
-        logger.warning("faster-whisper on %s failed (%s) — cpu int8", device, exc)
-        _fw_models[name] = WhisperModel(name, device="cpu", compute_type="int8")
+        logger.warning("faster-whisper on %s failed (%s) — freeing all and retrying",
+                       device, exc)
+        _evict_fw(keep=set())
+        try:
+            _fw_models[name] = WhisperModel(name, device=device, compute_type=compute)
+        except (RuntimeError, ValueError) as exc2:
+            logger.warning("still failing (%s) — cpu int8", exc2)
+            _fw_models[name] = WhisperModel(name, device="cpu", compute_type="int8")
     return _fw_models[name]
 
 
@@ -340,7 +364,7 @@ def _transcribe_fw(
     words: list[dict[str, Any]] = []
     raw_lines: list[dict[str, Any]] = []
     for segm in segments:
-        text = (segm.text or "").strip()
+        text = (segm.text or "").replace("\ufffd", "").strip()
         if prompt and text == prompt:  # echoed prompt, not a lyric
             continue
         if text:
@@ -350,7 +374,9 @@ def _transcribe_fw(
                 "text": text,
             })
         for w in segm.words or []:
-            token = (w.word or "").strip()
+            # word timestamps split multi-byte (Malayalam/Devanagari) tokens
+            # at byte boundaries → U+FFFD fragments; drop them
+            token = (w.word or "").replace("\ufffd", "").strip()
             if token:
                 words.append({
                     "timestamp": round(float(w.start or 0.0), 3),

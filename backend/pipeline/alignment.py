@@ -174,10 +174,12 @@ def _get_model(cfg: LyricsConfig):
 
     device = cfg.torch_device()
     bundle = torchaudio.pipelines.MMS_FA
-    logger.info("loading MMS_FA aligner device=%s", device)
+    logger.info("loading MMS_FA aligner (runs on %s)", device)
     # fp32 even on CUDA: on a GTX 1650 (Turing, no tensor cores) the fp16
     # wav2vec2 forward measured 4.4x SLOWER (2.65 s vs 0.60 s per 19 s chunk).
-    model = bundle.get_model(with_star=False).to(device).eval()
+    # Cached on CPU; compute_emissions moves it to the GPU only while it runs
+    # (1.2 GB of weights must not sit next to Whisper on a 4 GB card).
+    model = bundle.get_model(with_star=False).eval()
     vocab = bundle.get_dict(star=None)
     _model_cache["mms_fa"] = (model, vocab, device, torch)
     return _model_cache["mms_fa"]
@@ -193,6 +195,22 @@ def compute_emissions(y: np.ndarray, cfg: LyricsConfig, window_s: float = 15.0,
     win, ctx = int(window_s * SR), int(context_s * SR)
     dtype = next(model.parameters()).dtype
     chunks: list[np.ndarray] = []
+    try:
+        model.to(device)
+    except RuntimeError as exc:  # no VRAM left → align on CPU this time
+        logger.warning("aligner on %s failed (%s) — cpu", device, exc)
+        device = "cpu"
+        model.to(device)
+    try:
+        _emit(model, y, win, ctx, device, dtype, torch, chunks)
+    finally:
+        if device != "cpu":
+            model.to("cpu")
+            torch.cuda.empty_cache()
+    return np.concatenate(chunks) if chunks else np.zeros((0, len(vocab))), vocab
+
+
+def _emit(model, y, win, ctx, device, dtype, torch, chunks) -> None:
     with torch.inference_mode():
         for start in range(0, max(1, len(y)), win):
             a, b = max(0, start - ctx), min(len(y), start + win + ctx)
@@ -203,9 +221,6 @@ def compute_emissions(y: np.ndarray, cfg: LyricsConfig, window_s: float = 15.0,
             lo = int(round((start - a) * f))
             hi = lo + int(round((min(start + win, len(y)) - start) * f))
             chunks.append(em[lo:hi])
-    if device.startswith("cuda"):
-        torch.cuda.empty_cache()
-    return np.concatenate(chunks) if chunks else np.zeros((0, len(vocab))), vocab
 
 
 # ── line windows ──────────────────────────────────────────────────────────
