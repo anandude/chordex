@@ -20,6 +20,7 @@ import difflib
 import logging
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -77,6 +78,10 @@ _FILENAME_NOISE = re.compile(
 
 
 def _clean_name(text: str) -> str:
+    # download-site tags: "(mp3.pm)", "[PagalWorld.com]"
+    text = re.sub(r"[(\[]\s*(?:[\w-]+\.)+[a-z]{2,4}\s*[)\]]", " ", text, flags=re.I)
+    # underscored contractions: "Can_t_Help" → "Can't Help"
+    text = re.sub(r"(?<=[A-Za-z])_(t|s|ll|re|ve|m|d)(?=_|$)", r"'\1", text)
     text = re.sub(r"[_]+", " ", text)
     text = re.sub(r"\[[^\]]*\]", " ", text)  # [Official Video], [320kbps]
     text = _FILENAME_NOISE.sub(" ", text)
@@ -147,17 +152,29 @@ def _get_json(url: str, params: dict[str, Any], cfg: LyricsConfig) -> Any | None
         f"{url}?{qs}" if qs else url,
         headers={"User-Agent": cfg.user_agent, "Accept": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=cfg.lrclib_timeout_s) as resp:
-            import json
+    import json
 
-            if resp.status != 200:
-                return None
-            return json.loads(resp.read().decode("utf-8", "replace"))
-    except Exception as exc:
-        # 429 (rate limit) and timeouts read as a miss — make them visible
-        logger.warning("lrclib request failed (%s)", exc)
-        return None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=cfg.lrclib_timeout_s) as resp:
+                if resp.status != 200:
+                    return None
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            # 404 = genuine miss; 429/5xx = transient → one short retry
+            if exc.code in (429, 500, 502, 503, 504) and attempt == 0:
+                retry = exc.headers.get("Retry-After") if exc.headers else None
+                delay = min(5.0, float(retry)) if retry and retry.isdigit() else 2.0
+                logger.warning("lrclib HTTP %s — retrying in %.0fs", exc.code, delay)
+                time.sleep(delay)
+                continue
+            if exc.code != 404:
+                logger.warning("lrclib request failed (%s)", exc)
+            return None
+        except Exception as exc:
+            logger.warning("lrclib request failed (%s)", exc)
+            return None
+    return None
 
 
 # ── matching ──────────────────────────────────────────────────────────────
