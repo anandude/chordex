@@ -96,7 +96,7 @@ class LyricsConfig:
     # Cross-cutting
     device: str = "auto"  # torch models (demucs, aligner): auto | cpu | cuda[:n]
     cache_dir: str = "/tmp/chordex_lyrics_cache"
-    user_agent: str = "ChordLens/2.0 (lyrics eval; contact: owner)"
+    user_agent: str = "Chordex/2.0 (lyrics eval; contact: owner)"
 
     @classmethod
     def from_env(cls) -> "LyricsConfig":

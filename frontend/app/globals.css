@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 @theme {
-  /* ChordLens retro-brutalist studio palette (pulled from the pixel logo) */
+  /* Chordex retro-brutalist studio palette (pulled from the pixel logo) */
   --color-ink: #0b0a10;
   --color-coal: #16131f;
   --color-soot: #241f31;
@@ -22,9 +22,9 @@
 @theme inline {
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --font-pixel: var(--font-retro-byte), var(--font-geist-sans), sans-serif;
-  --font-cl: var(--font-claire), ui-monospace, monospace;
-  --font-lyrics: var(--font-claire), var(--font-noto-deva), var(--font-noto-mlym),
+  --font-pixel: var(--font-pixel-face), var(--font-geist-sans), sans-serif;
+  --font-cl: var(--font-mono-face), ui-monospace, monospace;
+  --font-lyrics: var(--font-mono-face), var(--font-noto-deva), var(--font-noto-mlym),
     ui-monospace, monospace;
 }
 
@@ -77,14 +77,13 @@ body {
   color: var(--color-paper);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
   background-color: var(--color-ink);
-  background-image: linear-gradient(
-      rgba(11, 10, 16, 0.88),
-      rgba(11, 10, 16, 0.94)
-    ),
-    url("/halftone-a.webp");
-  background-size: cover;
+  /* halftone dot texture, drawn in CSS (no image asset) */
+  background-image: radial-gradient(
+    rgba(244, 239, 230, 0.07) 1px,
+    transparent 1.6px
+  );
+  background-size: 7px 7px;
   background-attachment: fixed;
-  background-position: center;
   min-height: 100vh;
 }
 
@@ -130,4 +129,9 @@ body {
 .panel-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--color-soot, #2a2a2a) transparent;
+}
+
+/* Jersey 10 has a small x-height; scale it to read like the old pixel face. */
+.font-pixel {
+  font-size-adjust: 0.62;
 }

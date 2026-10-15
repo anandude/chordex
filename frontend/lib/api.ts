@@ -1,7 +1,7 @@
 /**
  * api.ts
  * ------
- * Typed wrappers for the ChordLens backend API.
+ * Typed wrappers for the Chordex backend API.
  */
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";

@@ -1,6 +1,7 @@
 "use client";
 
 import { ChordEvent } from "@/lib/api";
+import { Pause, Play } from "lucide-react";
 import { chordTextClass } from "@/lib/chordStyle";
 
 interface Props {
@@ -79,14 +80,11 @@ export default function NowNextBar({
             aria-label={playing ? "Pause" : "Play"}
             className="self-center w-12 h-12 rounded-full bg-lime border-2 border-black shadow-hard-sm flex items-center justify-center active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-transform"
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={playing ? "/icons/pause.svg" : "/icons/play.svg"}
-              alt=""
-              width={24}
-              height={24}
-              className="w-6 h-6"
-            />
+            {playing ? (
+              <Pause aria-hidden fill="currentColor" className="w-5 h-5 text-ink" />
+            ) : (
+              <Play aria-hidden fill="currentColor" className="w-5 h-5 text-ink translate-x-px" />
+            )}
           </button>
         )}
         {/* NOW — gold slab when live */}

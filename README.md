@@ -1,142 +1,203 @@
-# ChordLens (Chordex) — Guitar Chord Analyzer
+<div align="center">
 
-Upload any MP3 or WAV → get a timestamped chord progression → transpose to any key → play along with the audio.
+<img src="frontend/public/logo.webp" alt="Chordex" width="280">
 
-**Stack:** Next.js 16 + Python FastAPI · **Queue:** Redis + RQ · **Engines:** Chordino (primary) / improved template+HMM (fallback)
+### Drop a song or paste a YouTube link. Get a playable chord sheet.
 
----
+Chords **and** lyrics, with every chord sitting on the exact syllable where it
+changes. Transpose, Easy Mode (capo + open shapes), and Hindi / Malayalam
+lyrics in easy-to-read English letters.
 
-## What's new (v2 engine)
+[![CI](https://github.com/anandude/chordex/actions/workflows/ci.yml/badge.svg)](https://github.com/anandude/chordex/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-| Before | After |
-|--------|--------|
-| Krumhansl key-profile templates (maj/min only) | **Chordino** (NNLS-chroma, large vocab) when available |
-| No sequence model | **HMM Viterbi** fallback engine with maj/min/7/sus/dim/… |
-| Hard `/tmp` handoff (breaks multi-service) | Shared `UPLOAD_DIR` + optional S3/R2 |
-| Chords only | **Key estimate**, confidence, **audio playback** + playhead sync |
+<img src="docs/screenshots/results-desktop.png" alt="Chordex results page: control panel on the left, chord sheet with chords placed over the lyrics on the right" width="900">
 
----
+</div>
 
-## Project structure
+## Features
+
+- **Chords on the syllable.** Lyrics are force-aligned to the audio, and each
+  chord change is anchored to the word, or syllable, where it lands, like a
+  hand-made chord sheet. Copy it out as ChordPro.
+- **Any song in, any key out.** Upload MP3/WAV/OGG/FLAC or paste a YouTube
+  link. Transpose ±11 semitones, or turn on **Easy Mode** for a capo position
+  and beginner-friendly open shapes.
+- **Indian languages first.** Tuned speech models for **Hindi** and
+  **Malayalam** (English works too). Lyrics can be shown in the original script
+  or in everyday English letters, the way people actually type them:
+
+  | Original | Chordex shows |
+  |---|---|
+  | दिल की धड़कन | dil ki dhadkan |
+  | मैं तुम्हें समझता हूँ | main tumhein samajhta hun |
+  | നിന്റെ കണ്ണുകളിൽ | ninte kannukalil |
+  | ഞാൻ കണ്ടു | njaan kandu |
+
+- **Verified lyrics when available.** Synced lyrics from
+  [LRCLIB](https://lrclib.net) are used when the song is found. Otherwise
+  vocals are separated and transcribed.
+- **Play along.** Chord-coloured scrubber, live NOW/NEXT chord, the sung line
+  highlighted as it plays, and Space to play or pause.
+- **Runs on your machine.** A 4 GB GPU (tested on a GTX 1650) makes it fast,
+  but everything also runs on CPU.
+
+<details>
+<summary>More screenshots</summary>
+
+| Home | Mobile |
+|---|---|
+| <img src="docs/screenshots/home.png" width="480"> | <img src="docs/screenshots/results-mobile.png" width="240"> |
+
+</details>
+
+## How it works
 
 ```
-Chordex/
-  backend/
-    chord_detector.py       Facade → chord_engine
-    chord_engine/           Chordino + template-HMM engines
-    postprocess.py          Merge, beat-snap, key, tempo
-    label_map.py            MIREX/Harte → guitar labels
-    storage.py              Local / S3 upload storage
-    main.py                 FastAPI
-    worker.py               RQ worker
-    transposer.py
-  frontend/                 Next.js app
-  docker-compose.yml        Redis + API + worker
-  test-assets/              Synthetic WAVs
+upload / YouTube link
+        │
+        ├─► chord job (seconds) ── Chordino (NNLS-chroma) or template-HMM
+        │                          + beat grid, key, tempo
+        │
+        └─► lyrics job (≈1 min on GPU)
+              LRCLIB lookup ──hit──► synced lines
+                   │ miss
+              Demucs vocal separation
+              language ID (hi / ml / en)
+              ASR: faster-whisper (Hindi/English fine-tunes)
+                   Indic-Transcribe-core (Malayalam)
+              MMS forced alignment → word & syllable timings
+                   │
+                   ▼
+   sheet builder (backend/pipeline/sheet.py): chords anchored to syllables
+                   │
+                   ▼
+   Next.js UI: transpose / Easy Mode / English letters, all client-side
 ```
 
----
+Chords show up within seconds while lyrics are still processing. The two run
+on separate Redis/RQ queues.
 
-## Local development
+## Quick start
 
-### Prerequisites
-
-- Python 3.11+
-- Node.js 18+
-- Docker (used for Redis — no local `redis-server` install needed)
-- `ffmpeg` + `libsndfile1` (Ubuntu: `sudo apt-get install -y ffmpeg libsndfile1`)
-
-### One command (recommended)
-
-From the project root:
+**You need:** Linux or macOS, Python 3.11, Node.js 20+, Docker (only to run
+Redis; a local `redis-server` works too), plus `ffmpeg` and `libsndfile`.
 
 ```bash
+# Ubuntu/Debian system packages
+sudo apt-get install -y ffmpeg libsndfile1
+
+git clone https://github.com/anandude/chordex.git
+cd chordex
 ./start.sh
 ```
 
-That starts **Redis + API + worker + frontend** and opens:
+The first run creates `backend/.venv`, installs everything and starts Redis,
+the API, both workers and the frontend. Open **http://localhost:3000**.
 
-| Service  | URL |
-|----------|-----|
-| App      | http://localhost:3000 |
-| API      | http://localhost:8000 |
-| Health   | http://localhost:8000/health |
+| Command | |
+|---|---|
+| `./start.sh` | Start everything (installs on first run) |
+| `./start.sh --stop` | Stop everything |
+| `./start.sh --setup` | Reinstall dependencies, then start |
+| `./start.sh --prewarm` | Pre-download the speech models |
+| `./start.sh --docker` | API + worker + Redis in Docker Compose (CPU) |
 
-| Command | What it does |
-|---------|----------------|
-| `./start.sh` | Run everything (installs missing deps on first run) |
-| `./start.sh --setup` | Force reinstall/setup, then start |
-| `./start.sh --stop` | Stop all processes / Redis container |
-| `./start.sh --docker` | API + worker + Redis via Docker Compose only |
+Logs are in `.run/logs/` (`worker-lyrics.log` for lyrics).
 
-Logs: `.run/logs/api.log`, `worker.log`, `frontend.log`  
-Stop: **Ctrl+C** or `./start.sh --stop`
+### Malayalam (one-time)
 
-### Manual / advanced
+The default Malayalam model, [`bodhan-ai/indic-transcribe-core`](https://huggingface.co/bodhan-ai/indic-transcribe-core),
+is gated. Accept its terms on Hugging Face, then log in once:
 
 ```bash
-# Backend only
-cd backend && source .venv/bin/activate && bash install_deps.sh
-uvicorn main:app --reload --port 8000   # terminal 1
-python worker.py                        # terminal 2
-
-# Frontend only
-cd frontend && npm install && npm run dev
+backend/.venv/bin/hf auth login
 ```
+
+Without this, Malayalam quietly falls back to an older Whisper fine-tune.
+
+### GPU
+
+GPU use is automatic (`WHISPER_DEVICE=auto`, `LYRICS_DEVICE=auto`). Defaults
+are tuned for a 4 GB card: int8 Whisper, with one model on the GPU at a time.
+With no GPU, everything runs on CPU, and lyrics take a few minutes instead of
+about one.
+
+### Configuration
+
+Every option is documented in [`backend/.env.example`](backend/.env.example).
+Copy it to `backend/.env` to change anything. The ones you're most likely to
+touch:
+
+| Variable | Default | |
+|---|---|---|
+| `ENABLE_LYRICS` | `1` | `0` = chords only |
+| `LYRICS_LRCLIB` | `1` | Look up verified lyrics before transcribing |
+| `LYRICS_ROMAN_BACKEND` | `readable` | English-letter spelling engine |
+| `MAX_FILE_SIZE_MB` | `20` | Upload limit |
+| `YOUTUBE_MAX_DURATION_S` | `1200` | Longest YouTube video accepted |
+| `NEXT_PUBLIC_API_URL` (frontend) | `http://localhost:8000` | Where the UI finds the API |
+
+## API
+
+| | |
+|---|---|
+| `POST /api/analyze` | multipart `file` (+ optional `language`, `title`, `artist`) → `{job_id}` |
+| `POST /api/analyze-url` | JSON `{url, language?, title?, artist?}` (YouTube) → `{job_id}` |
+| `GET /api/status/{job_id}` | Chords as soon as they're ready; `result.sheet` once lyrics land |
+| `GET /api/audio/{job_id}` | The audio, with Range support, for playback |
+| `DELETE /api/jobs/{job_id}` | Cancel |
+| `GET /health` | Config + Redis check |
+
+## Development
 
 ```bash
-curl -F "file=@test-assets/c_f_g_c.wav" http://localhost:8000/api/analyze
-curl http://localhost:8000/api/status/<job_id>
+cd backend && .venv/bin/python -m pytest -q       # backend tests
+cd frontend && npm run lint && npx tsc --noEmit  # frontend checks
 ```
 
-### Engine selection
+`eval/` holds the benchmark harness. `eval/run_eval.py` measures timing and,
+when reference files exist, lyrics accuracy and chord placement (see
+[`eval/refs/REFERENCES.md`](eval/refs/REFERENCES.md)). Design notes live in
+[`docs/`](docs).
 
-| `CHORD_ENGINE` | Behavior |
-|----------------|----------|
-| `auto` (default) | Chordino if install works, else template-HMM |
-| `chordino` | Chordino only (error if unavailable) |
-| `template` | Improved template + HMM only |
+## Contributing
 
----
+Contributions are very welcome, especially chord or lyrics accuracy reports,
+spelling fixes for the English-letter view, and support for more languages.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started, and please follow the
+[code of conduct](CODE_OF_CONDUCT.md).
 
-## Tests
+## Limitations
 
-```bash
-cd backend
-source .venv/bin/activate
-pytest -q
+- Automatic chord recognition is never perfect. Expect playable
+  progressions on clear pop, film and acoustic songs, and trust your ear on
+  dense mixes.
+- Machine-transcribed lyrics can be wrong, especially on music videos with
+  dialogue or intros. Audio-only uploads work best.
+- Only Hindi and Malayalam have tuned models and spelling rules. Other Indic
+  scripts get generic transliteration.
 
-# Generate synthetic fixtures (optional)
-python ../test-assets/generate_fixtures.py
-```
+## License and responsible use
 
----
+Chordex's code is [MIT-licensed](LICENSE). It uses third-party models and
+libraries with **their own licenses**, including non-commercial model weights
+(MMS forced alignment) and an AGPL-3.0 library (aksharamukha). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before any commercial or
+hosted use.
 
-## Deployment notes
+Songs and lyrics are copyrighted. Use Chordex with music you have the right
+to use, and respect YouTube's Terms of Service when using YouTube links.
+Never commit audio to this repository.
 
-1. **API + worker must share audio storage** — use the same `UPLOAD_DIR` volume, or set `S3_BUCKET` (+ endpoint for R2).
-2. Render: two services from the same Docker image (`uvicorn` and `python worker.py`).
-3. Vercel frontend: `NEXT_PUBLIC_API_URL` → your API URL.
-4. Cold starts on free tiers can take ~50s; the UI already shows a wake-up message.
+## Acknowledgements
 
----
-
-## Roadmap
-
-| Version | Feature | Status |
-|---------|---------|--------|
-| **MVP** | Upload → chords → transpose | Done |
-| **v2 engine** | Chordino / HMM, key, playback | Done |
-| **v2 lyrics** | faster-whisper word/line sync | Done |
-| **v3** | Capo + beginner easy chords | Done |
-
-### Lyrics & easy chords
-
-- **Lyrics**: worker runs `faster-whisper` (`WHISPER_MODEL=tiny` by default). Disable with `ENABLE_LYRICS=0`.
-- **Easy mode**: frontend toggle — strips extensions and suggests capo 0–7 for open shapes. Works offline on the result (no re-upload).
-
----
-
-## Honest accuracy note
-
-Automatic chord recognition on mixed commercial audio is **not 100%**. Open systems typically land ~70–80% maj/min on pop benchmarks. ChordLens aims for **playable progressions** on clear pop/rock/acoustic tracks; trust your ear on dense metal/jazz.
+[Chordino / NNLS-chroma](http://www.isophonics.net/nnls-chroma),
+[Demucs](https://github.com/facebookresearch/demucs),
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper),
+[adalat-ai](https://huggingface.co/adalat-ai) Indic Whisper fine-tunes,
+[Bodhan AI / AI4Bharat](https://huggingface.co/bodhan-ai) Indic-Transcribe,
+[Meta MMS](https://github.com/facebookresearch/fairseq/tree/main/examples/mms),
+[LRCLIB](https://lrclib.net), [Aksharamukha](https://github.com/virtualvinodh/aksharamukha),
+and [yt-dlp](https://github.com/yt-dlp/yt-dlp).

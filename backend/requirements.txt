@@ -51,7 +51,7 @@ sentencepiece>=0.1.99
 torchaudio>=2.0  # CPU-only: pip install torchaudio --index-url https://download.pytorch.org/whl/cpu
 hf_transfer>=0.1  # fast HF downloads (unauthenticated traffic is throttled)
 # Phase 4 CTC forced alignment: torchaudio.pipelines.MMS_FA acoustic model
-# (weights CC-BY-NC — see LICENSE-NOTES.md) + our own numpy CTC Viterbi.
+# (weights CC-BY-NC — see THIRD_PARTY_NOTICES.md) + our own numpy CTC Viterbi.
 # uroman romanises native script for the aligner. (PyPI ctc-forced-aligner
 # 1.0.2 was removed: it is an unrelated ONNX/English-only package.)
 uroman==1.3.1.1

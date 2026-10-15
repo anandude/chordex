@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ChordLens one-command local runner.
+# Chordex one-command local runner.
 #
 # Usage:
 #   ./start.sh              # Redis (Docker) + API + worker + frontend
@@ -48,7 +48,7 @@ done
 
 # ── stop ──────────────────────────────────────────────────────────────────────
 stop_all() {
-  info "Stopping ChordLens…"
+  info "Stopping Chordex…"
 
   if [[ -f "$PID_DIR/api.pid" ]]; then
     kill "$(cat "$PID_DIR/api.pid")" 2>/dev/null || true
@@ -299,7 +299,7 @@ fi
 
 echo
 echo -e "${GREEN}════════════════════════════════════════${NC}"
-echo -e "${GREEN}  ChordLens is running${NC}"
+echo -e "${GREEN}  Chordex is running${NC}"
 echo -e "${GREEN}════════════════════════════════════════${NC}"
 echo -e "  App:     ${CYAN}http://localhost:3000${NC}"
 echo -e "  API:     ${CYAN}http://localhost:8000${NC}"

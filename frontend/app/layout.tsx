@@ -1,6 +1,12 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Noto_Sans_Devanagari, Noto_Sans_Malayalam } from "next/font/google";
-import localFont from "next/font/local";
+import {
+  Geist,
+  Geist_Mono,
+  Noto_Sans_Devanagari,
+  Noto_Sans_Malayalam,
+  Jersey_10,
+  Space_Mono,
+} from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 
@@ -14,17 +20,18 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const retroByte = localFont({
-  src: "../fonts/RetroByte.ttf",
-  variable: "--font-retro-byte",
-  weight: "400",
+// Open-licensed (SIL OFL) Google Fonts — the repo ships no font files.
+const pixel = Jersey_10({
+  variable: "--font-pixel-face",
+  subsets: ["latin"],
+  weight: ["400"],
   display: "swap",
 });
 
-const claireMono = localFont({
-  src: "../fonts/CSClaireMono-Regular.otf",
-  variable: "--font-claire",
-  weight: "400",
+const mono = Space_Mono({
+  variable: "--font-mono-face",
+  subsets: ["latin"],
+  weight: ["400"],
   display: "swap",
 });
 
@@ -43,7 +50,7 @@ const notoMlym = Noto_Sans_Malayalam({
 });
 
 export const metadata: Metadata = {
-  title: "ChordLens — Guitar Chord Analyzer",
+  title: "Chordex — chords + lyrics from any song",
   description:
     "Upload a song and get every chord with timestamps, synced lyrics, transpose and easy-chord modes.",
 };
@@ -56,7 +63,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${retroByte.variable} ${claireMono.variable} ${notoDeva.variable} ${notoMlym.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${pixel.variable} ${mono.variable} ${notoDeva.variable} ${notoMlym.variable} antialiased`}
       >
         <Providers>{children}</Providers>
       </body>
