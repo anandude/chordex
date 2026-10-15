@@ -28,7 +28,9 @@ def _env_flag(name: str, default: bool) -> bool:
 class LyricsConfig:
     # Phase 1 — separation
     separation_backend: str = "demucs"  # none | demucs | roformer
-    demucs_model: str = "htdemucs_ft"
+    # htdemucs (single model) by default: htdemucs_ft is a bag of 4 models,
+    # ~4x the compute for a small vocal-quality gain. Opt in via env.
+    demucs_model: str = "htdemucs"
     roformer_model: str = ""  # empty = resolve from audio-separator model list at runtime
     dereverb: bool = False
     dereverb_model: str = ""
@@ -59,6 +61,7 @@ class LyricsConfig:
     romanisation_enabled: bool = True  # display toggle default; storage stays native
 
     # Cross-cutting
+    device: str = "auto"  # torch models (demucs, aligner): auto | cpu | cuda[:n]
     cache_dir: str = "/tmp/chordex_lyrics_cache"
     user_agent: str = "ChordLens/2.0 (lyrics eval; contact: owner)"
 
@@ -74,7 +77,7 @@ class LyricsConfig:
             sep = "none"
         return cls(
             separation_backend=sep,
-            demucs_model=_env("LYRICS_DEMUCS_MODEL", "htdemucs_ft"),
+            demucs_model=_env("LYRICS_DEMUCS_MODEL", "htdemucs"),
             roformer_model=_env("LYRICS_ROFORMER_MODEL", ""),
             dereverb=_env_flag("LYRICS_DEREVERB", False),
             dereverb_model=_env("LYRICS_DEREVERB_MODEL", ""),
@@ -95,7 +98,23 @@ class LyricsConfig:
             ),
             llm_cleanup_enabled=_env_flag("LYRICS_LLM_CLEANUP", False),
             cache_dir=_env("LYRICS_CACHE_DIR", "/tmp/chordex_lyrics_cache"),
+            device=_env("LYRICS_DEVICE", "auto").lower(),
         )
+
+    def torch_device(self) -> str:
+        """Resolve ``device`` for torch models: ``auto`` → cuda when a GPU is
+        usable, else cpu. Explicit cuda without a GPU degrades to cpu."""
+        pref = self.device or "auto"
+        if pref == "cpu":
+            return "cpu"
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return pref if pref.startswith("cuda") else "cuda"
+        except Exception:
+            pass
+        return "cpu"
 
     def asr_model_for(self, language: str | None) -> str:
         """Phase 3 routing table. HF fine-tunes contain '/' and load via the
@@ -127,6 +146,7 @@ class LyricsConfig:
         ]
         if self.separation_backend == "demucs":
             parts.append(f"demucs={self.demucs_model}")
+        parts.append(f"device={self.device}")
         if self.dereverb:
             parts.append("dereverb=on")
         return "|".join(parts)
