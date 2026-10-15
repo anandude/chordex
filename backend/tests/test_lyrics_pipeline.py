@@ -27,7 +27,7 @@ def test_config_defaults_and_routing(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     cfg = LyricsConfig.from_env()
     assert cfg.separation_backend == "demucs"
-    assert cfg.demucs_model == "htdemucs_ft"
+    assert cfg.demucs_model == "htdemucs"
     assert cfg.asr_model_for("ml") == "adalat-ai/whisper-medium-ml-rmft"
     assert cfg.asr_model_for("hi") == "adalat-ai/whisper-medium-hi-high-lr"
     assert cfg.asr_model_for(None) == "small"

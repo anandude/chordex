@@ -198,6 +198,7 @@ export ENABLE_LYRICS="${ENABLE_LYRICS:-1}"
 export WHISPER_MODEL="${WHISPER_MODEL:-small}"
 export WHISPER_DEVICE="${WHISPER_DEVICE:-cpu}"
 export WHISPER_COMPUTE_TYPE="${WHISPER_COMPUTE_TYPE:-int8}"
+export LYRICS_DEVICE="${LYRICS_DEVICE:-auto}"   # demucs + aligner on the GPU when present
 export ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-http://localhost:3000}"
 export NEXT_PUBLIC_API_URL="${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
 mkdir -p "$UPLOAD_DIR"
