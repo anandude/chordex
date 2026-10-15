@@ -13,6 +13,15 @@ import os
 from dataclasses import dataclass, field
 
 
+def ct2_dir_for(model_id: str) -> "Path":
+    """Local CTranslate2 conversion dir for an HF model id (scripts/convert_ct2.py)."""
+    from pathlib import Path
+
+    base = Path(os.getenv("LYRICS_CT2_DIR", "").strip()
+                or Path(__file__).resolve().parent.parent / "models" / "ct2")
+    return base / model_id.replace("/", "--")
+
+
 def _env(name: str, default: str) -> str:
     return os.getenv(name, default).strip() or default
 
@@ -46,7 +55,7 @@ class LyricsConfig:
     whisper_model: str = "small"
     whisper_model_overrides_json: str = ""
     whisper_device: str = "auto"  # auto | cpu | cuda (see pipeline/gpu.py)
-    whisper_compute_type: str = ""  # empty → float16 on cuda, int8 on cpu
+    whisper_compute_type: str = ""  # empty → int8_float16 on cuda, int8 on cpu
     # A1: language ID runs on the stem BEFORE model routing. Candidates bias
     # detection toward the languages we serve (singing confuses ml↔ta); a
     # non-candidate wins only when Whisper is very sure (see asr.py).
@@ -142,9 +151,14 @@ class LyricsConfig:
                 builtin.update({str(k): str(v) for k, v in parsed.items()})
             except (ValueError, TypeError):
                 pass
-        if language and language in builtin:
-            return builtin[language]
-        return self.whisper_model
+        name = builtin[language] if language and language in builtin else self.whisper_model
+        # A2: prefer a local CTranslate2 conversion (batched faster-whisper)
+        # over the transformers runtime for HF fine-tunes.
+        if "/" in name:
+            ct2 = ct2_dir_for(name)
+            if (ct2 / "model.bin").exists():
+                return str(ct2)
+        return name
 
     def describe(self) -> str:
         parts = [
