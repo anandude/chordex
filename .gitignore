@@ -45,3 +45,4 @@ backend/models/*.ckpt
 # Raw design downloads (not wired into the app)
 /assets/
 /public/
+backend/models/ct2/
