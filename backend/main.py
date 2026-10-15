@@ -251,6 +251,23 @@ def _lyrics_state(job_id: str) -> tuple[str, str | None]:
     return "pending", None
 
 
+def _romanise_sheet(sheet: dict, lang: str | None) -> None:
+    """Word-level romanisation (hi/ml) so the Roman view keeps every chord on
+    its word — line-level roman text could not carry anchors."""
+    if lang not in ("hi", "ml"):
+        return
+    try:
+        from pipeline.cleanup import romanise_lines
+
+        words = [w for r in sheet["rows"] if r.get("kind") == "line" for w in r["words"]]
+        romans = romanise_lines([{"text": w["text"]} for w in words], lang)
+        for w, r in zip(words, romans):
+            if r.get("roman") and r["roman"] != w["text"]:
+                w["roman"] = r["roman"]
+    except Exception:
+        pass
+
+
 def _attach_sheet(job_id: str, result: dict) -> None:
     """L2: merge chords + lyric timing into the chord sheet (pipeline/sheet).
 
@@ -277,6 +294,7 @@ def _attach_sheet(job_id: str, result: dict) -> None:
     except Exception as exc:  # never break status polling over the sheet
         result["sheet_error"] = str(exc)[:300]
         return
+    _romanise_sheet(sheet, result.get("lyrics_language"))
     result["sheet"] = sheet
     if final:
         try:
