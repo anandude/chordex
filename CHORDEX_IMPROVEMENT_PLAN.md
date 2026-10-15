@@ -352,3 +352,27 @@ Re-measure after S1, S3, A3 and L2/D1, and report before/after numbers for each.
 - **Q2 Languages**: are hi/ml the priority, with English as secondary? This decides how much effort goes into A2.
 - **Q3 Licensing**: still personal use only? MMS_FA weights are CC-BY-NC.
 - **Q4 Merge location**: I recommend the backend `sheet` (testable in pytest, single source). The alternative is keeping it in TypeScript and adding vitest.
+
+---
+
+## Phase 4 — Results (2026-10-15, branch `improve/lyrics-alignment`)
+
+Measured with `eval/run_eval.py` (cold cache, real upload flow without Redis). Raw rows are in `eval/timing.md`.
+Baseline = `main@7b8e2e5` on CPU, which is how it shipped. "After" = branch HEAD on the GTX 1650, auto language, routed models.
+
+| Song (length) | Lyrics before | Lyrics after (full ASR path) | After, LRCLIB hit | Language before → after |
+|---|---|---|---|---|
+| Hindi, Chahun Main Ya Naa (5:05) | 694.7 s | 81.5 s | 46.3 s (live upload: 37.4 s) | en ✗ → hi ✓ |
+| Malayalam, Mazha… (4:56) | 612.0 s | 68.2 s | n/a (not on LRCLIB) | ta ✗ → ml ✓ |
+| English, Elvis (3:03) | 364.5 s | 27.5 s | (LRCLIB rate-limited during tests) | en → en |
+
+Stage breakdown, Hindi, before → after: separation 607 → 26 s · ASR 86 → 37 s (the medium fine-tune; `small` is 18 s) · alignment 0 s (it never ran) → 19 s. Chords are unchanged at ~7 s.
+
+Corrections to the plan, found while measuring:
+- PyPI `ctc-forced-aligner==1.0.2` is an unrelated package. It was replaced with torchaudio MMS_FA plus an in-house CTC Viterbi.
+- **Silero VAD drops sustained singing.** It marked 41 of 183 s as voiced on the ballad, which halved the lyrics. An energy gate on the vocal stem replaced it.
+- On a GTX 1650, fp16 is 3–4× *slower* than fp32 or int8 (no tensor cores). The aligner runs fp32; Whisper runs int8_float16.
+- CTranslate2 needs CUDA 12 cuBLAS while torch ships CUDA 13, so `nvidia-cublas-cu12` is preloaded in-process.
+- A long-lived worker on a 4 GB card needs explicit VRAM management (the second song in a new language ran out of memory). It is in place: verified hi → ml → en in one process, peak 3.3 GB.
+
+Not measurable yet: CER/WER, chord-placement accuracy and word-onset error, because no reference files exist (see `eval/refs/REFERENCES.md`). Malayalam/Hindi quality was only checked by eye: the fine-tunes produce recognisable native-script lyrics, where Whisper `small` produced mixed-script garbage.
