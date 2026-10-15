@@ -9,6 +9,13 @@ interface Props {
   currentTime: number;
   playing: boolean;
   onSeek?: (timestamp: number) => void;
+  /** Pinned to the top while the sheet scrolls (mobile); off in the sidebar. */
+  sticky?: boolean;
+  /** Shows a play/pause button in the bar (mobile, where the player has
+   *  scrolled away by the time you're reading the sheet). */
+  onTogglePlay?: () => void;
+  /** Smaller type and padding for the desktop sidebar. */
+  compact?: boolean;
 }
 
 const PROGRESS_BLOCKS = 14;
@@ -24,7 +31,11 @@ export default function NowNextBar({
   currentTime,
   playing,
   onSeek,
+  sticky = true,
+  onTogglePlay,
+  compact = false,
 }: Props) {
+  const pad = compact ? "px-3.5 py-2.5" : "px-3 py-2.5 sm:px-5 sm:py-3";
   if (!chords.length) return null;
 
   const hasActive = activeIndex != null;
@@ -50,18 +61,41 @@ export default function NowNextBar({
     <div
       // Sticky playhead header: solid background (not translucent) so pinned
       // content never visually collides with the sheet scrolling under it.
-      className={`sticky top-0 z-20 -mx-1 px-1 pt-3 pb-2 bg-ink shadow-hard transition-opacity ${
-        playing ? "" : "opacity-70"
-      }`}
+      className={
+        sticky
+          ? "sticky top-0 z-20 -mx-1 px-1 pt-3 pb-2 bg-ink shadow-hard"
+          : ""
+      }
     >
-      <div className="grid grid-cols-[1fr_auto_1fr] items-stretch gap-2 sm:gap-4">
+      <div
+        className={`grid ${
+          onTogglePlay ? "grid-cols-[auto_1fr_auto_1fr]" : "grid-cols-[1fr_auto_1fr]"
+        } items-stretch gap-2 sm:gap-4`}
+      >
+        {onTogglePlay && (
+          <button
+            type="button"
+            onClick={onTogglePlay}
+            aria-label={playing ? "Pause" : "Play"}
+            className="self-center w-12 h-12 rounded-full bg-lime border-2 border-black shadow-hard-sm flex items-center justify-center active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-transform"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={playing ? "/icons/pause.svg" : "/icons/play.svg"}
+              alt=""
+              width={24}
+              height={24}
+              className="w-6 h-6"
+            />
+          </button>
+        )}
         {/* NOW — gold slab when live */}
         <button
           type="button"
           onClick={() => onSeek?.(nowStart)}
           aria-label={`Current chord ${chordLabel(now.chord)}. Restart it.`}
           className={[
-            "text-left border-2 border-black px-3 py-2.5 sm:px-5 sm:py-3 transition-all",
+            `text-left border-2 border-black ${pad} transition-all`,
             nowActive
               ? "bg-gold text-ink shadow-hard"
               : "bg-paper text-ink shadow-hard-sm hover:-translate-y-0.5",
@@ -77,7 +111,9 @@ export default function NowNextBar({
           <p
             aria-live="polite"
             className={`font-pixel leading-none ${
-              now.chord.length > 5 ? "text-3xl sm:text-5xl" : "text-4xl sm:text-6xl"
+              compact
+                ? now.chord.length > 5 ? "text-3xl" : "text-4xl"
+                : now.chord.length > 5 ? "text-3xl sm:text-5xl" : "text-4xl sm:text-6xl"
             }`}
           >
             {chordLabel(now.chord)}
@@ -112,14 +148,16 @@ export default function NowNextBar({
             type="button"
             onClick={() => onSeek?.(next.timestamp)}
             aria-label={`Next chord ${chordLabel(next.chord)}. Jump to it.`}
-            className="text-right border-2 border-black bg-coal px-3 py-2.5 sm:px-5 sm:py-3 text-paper shadow-hard-sm hover:-translate-y-0.5 transition-all"
+            className={`text-right border-2 border-black bg-coal ${pad} text-paper shadow-hard-sm hover:-translate-y-0.5 transition-all`}
           >
             <p className="font-cl text-[11px] sm:text-xs uppercase tracking-[0.2em] text-paper-dim mb-1">
               Next
             </p>
             <p
               className={`font-pixel leading-none ${
-                next.chord.length > 5 ? "text-2xl sm:text-4xl" : "text-3xl sm:text-5xl"
+                compact
+                  ? next.chord.length > 5 ? "text-2xl" : "text-3xl"
+                  : next.chord.length > 5 ? "text-2xl sm:text-4xl" : "text-3xl sm:text-5xl"
               } ${chordTextClass(next.chord)}`}
             >
               {chordLabel(next.chord)}
@@ -131,11 +169,11 @@ export default function NowNextBar({
             </p>
           </button>
         ) : (
-          <div className="text-right border-2 border-black bg-coal px-3 py-2.5 sm:px-5 sm:py-3 text-paper shadow-hard-sm">
+          <div className={`text-right border-2 border-black bg-coal ${pad} text-paper shadow-hard-sm`}>
             <p className="font-cl text-[11px] sm:text-xs uppercase tracking-[0.2em] text-paper-dim mb-1">
               Next
             </p>
-            <p className="font-pixel text-3xl sm:text-5xl leading-none text-paper-dim/70">
+            <p className={`font-pixel leading-none text-paper-dim/70 ${compact ? "text-3xl" : "text-3xl sm:text-5xl"}`}>
               —
             </p>
             <p className="text-xs sm:text-sm mt-2 font-pixel text-transparent">
