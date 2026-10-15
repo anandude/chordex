@@ -263,6 +263,10 @@ def build_result(
         "key": resolved_key,
         "duration": round(duration, 3),
         "engine": engine,
+        # L1: the beat grid used for snapping — the chord sheet scales its
+        # anchoring tolerances to the beat period and lays instrumental
+        # stretches out in bars. Empty when beat tracking is skipped.
+        "beats": [round(float(b), 3) for b in beats],
     }
 
 
@@ -289,4 +293,5 @@ def build_light_result(
         "key": "unknown",
         "duration": round(float(duration), 3),
         "engine": engine,
+        "beats": [],
     }
