@@ -485,6 +485,8 @@ def test_metadata_uses_original_upload_filename(tmp_path):
     assert m == {"title": "Mazha Njaan Arinjirunnilla"}  # no guessed artist
     m = get_metadata(stored, filename="Arijit_Singh - Kesariya [Official Video].mp3")
     assert m["artist"] == "Arijit Singh" and m["title"] == "Kesariya"
+    m = get_metadata(stored, filename="Elvis_Presly_-_I_Can_t_Help_Falling_In_Love_With_You_(mp3.pm).mp3")
+    assert m == {"artist": "Elvis Presly", "title": "I Can't Help Falling In Love With You"}
     # no hint: the stored name "audio" is noise, so no bogus lookup happens
     assert "title" not in get_metadata(stored)
 
@@ -545,3 +547,18 @@ def test_failed_finetune_falls_back_to_stock_model(tmp_path, monkeypatch):
     out = lt.transcribe_lyrics(str(wav))
     assert calls[1] == ("ml", "small")
     assert out["lyrics"] and "→small" in out["models"]["asr"]
+
+
+def test_routing_prefers_local_ct2_conversion(tmp_path, monkeypatch):
+    """A2: a converted fine-tune (scripts/convert_ct2.py) runs on batched
+    faster-whisper instead of the transformers pipeline."""
+    from pipeline.config import LyricsConfig, ct2_dir_for
+
+    monkeypatch.setenv("LYRICS_CT2_DIR", str(tmp_path))
+    cfg = LyricsConfig()
+    assert cfg.asr_model_for("hi") == "adalat-ai/whisper-medium-hi-high-lr"
+    d = ct2_dir_for("adalat-ai/whisper-medium-hi-high-lr")
+    d.mkdir(parents=True)
+    (d / "model.bin").write_bytes(b"x")
+    assert cfg.asr_model_for("hi") == str(d)
+    assert cfg.asr_model_for("en") == "small"
