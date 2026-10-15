@@ -309,6 +309,8 @@ def _transcribe_fw(
 
     model = _get_fw_model(model_name, cfg)
     pipe = BatchedInferencePipeline(model)
+    fine_tune = "/" in model_name  # HF id or local CT2 conversion dir
+    prompt = _INITIAL_PROMPTS.get(lang or "")
     duration = max(1e-6, len(y) / SR)
     # Indic scripts are token-dense: shorter windows avoid the 448-token cap.
     chunk = 30 if lang in (None, "en") else 20
@@ -320,7 +322,7 @@ def _transcribe_fw(
         language=lang,
         task="transcribe",
         batch_size=cfg.asr_batch_size,
-        beam_size=5,
+        beam_size=cfg.asr_beam_size,
         word_timestamps=True,
         clip_timestamps=[{"start": s, "end": e} for s, e in windows],
         chunk_length=chunk,
@@ -329,12 +331,18 @@ def _transcribe_fw(
         compression_ratio_threshold=2.4,
         log_prob_threshold=-1.0,
         no_speech_threshold=0.6,
-        initial_prompt=_INITIAL_PROMPTS.get(lang or ""),
+        # Script prompt only for stock multilingual models (stops Devanagari /
+        # Malayalam drifting into romanisation). Fine-tunes are already
+        # language-locked, and a prompt can be echoed back as a "lyric" in a
+        # quiet window — measured with the hi fine-tune.
+        initial_prompt=None if fine_tune else prompt,
     )
     words: list[dict[str, Any]] = []
     raw_lines: list[dict[str, Any]] = []
     for segm in segments:
         text = (segm.text or "").strip()
+        if prompt and text == prompt:  # echoed prompt, not a lyric
+            continue
         if text:
             raw_lines.append({
                 "timestamp": round(float(segm.start or 0.0), 3),
