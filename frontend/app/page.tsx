@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import { uploadAudio } from "@/lib/api";
+import { analyzeUrl, isYouTubeUrl, uploadAudio } from "@/lib/api";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB
 const ALLOWED_EXTS = [".mp3", ".wav", ".ogg", ".flac"];
@@ -22,6 +22,8 @@ export default function Home() {
   const router = useRouter();
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [busyLabel, setBusyLabel] = useState("UPLOADING…");
+  const [link, setLink] = useState("");
   const [language, setLanguage] = useState("auto");
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
@@ -40,6 +42,7 @@ export default function Home() {
         setError("File too large. Maximum size is 20 MB.");
         return;
       }
+      setBusyLabel("UPLOADING…");
       setIsUploading(true);
       try {
         const { job_id } = await uploadAudio(file, language, {
@@ -57,14 +60,41 @@ export default function Home() {
     [router, language, title, artist]
   );
 
+  const handleLink = useCallback(
+    async (url: string) => {
+      setError(null);
+      if (!isYouTubeUrl(url)) {
+        setError("Paste a YouTube link (youtube.com or youtu.be).");
+        return;
+      }
+      setBusyLabel("FETCHING FROM YOUTUBE…");
+      setIsUploading(true);
+      try {
+        const { job_id } = await analyzeUrl(url.trim(), language, {
+          title: title.trim() || undefined,
+          artist: artist.trim() || undefined,
+        });
+        router.push(`/results/${job_id}`);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Couldn't fetch that link."
+        );
+        setIsUploading(false);
+      }
+    },
+    [router, language, title, artist]
+  );
+
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragging(false);
       const file = e.dataTransfer.files[0];
-      if (file) handleFile(file);
+      if (file) return handleFile(file);
+      const text = e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain");
+      if (text) handleLink(text.split("\n")[0]);
     },
-    [handleFile]
+    [handleFile, handleLink]
   );
 
   return (
@@ -81,7 +111,7 @@ export default function Home() {
             className="w-64 sm:w-80 h-auto drop-shadow-[6px_6px_0_rgba(0,0,0,0.9)]"
           />
           <p className="font-cl text-paper-dim text-sm sm:text-base mt-4 text-center">
-            drop a song → get a playable chord sheet
+            drop a song or paste a YouTube link → get a playable chord sheet
           </p>
         </div>
 
@@ -136,7 +166,7 @@ export default function Home() {
                 ))}
               </div>
               <p className="font-pixel text-ink text-lg tracking-wide">
-                UPLOADING…
+                {busyLabel}
               </p>
             </div>
           ) : (
@@ -160,6 +190,33 @@ export default function Home() {
             </>
           )}
         </div>
+
+        {/* YouTube link — same pipeline, audio fetched by the backend */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!isUploading && link.trim()) handleLink(link);
+          }}
+          className="mt-5 flex gap-3"
+        >
+          <input
+            type="url"
+            inputMode="url"
+            value={link}
+            onChange={(e) => setLink(e.target.value)}
+            placeholder="…or paste a YouTube link"
+            aria-label="YouTube link"
+            disabled={isUploading}
+            className="flex-1 min-w-0 bg-paper text-ink text-sm font-semibold border-2 border-black shadow-hard-sm px-3 py-2.5 min-h-11 placeholder:text-ink/45 focus:outline-none focus:-translate-y-px transition-transform disabled:opacity-60"
+          />
+          <button
+            type="submit"
+            disabled={isUploading || !link.trim()}
+            className="shrink-0 font-pixel bg-gold text-ink border-2 border-black shadow-hard-sm px-4 min-h-11 hover:-translate-y-px transition-transform disabled:opacity-50 disabled:hover:translate-y-0"
+          >
+            GO
+          </button>
+        </form>
 
         {/* Optional details — grouped in one panel so the drop zone stays hero */}
         <div className="mt-5 bg-coal border-2 border-black shadow-hard p-4 sm:p-5">

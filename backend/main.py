@@ -5,6 +5,7 @@ FastAPI application — ChordLens backend API.
 
 Endpoints:
     POST /api/analyze            Upload audio → enqueue job → return {job_id}
+    POST /api/analyze-url        YouTube link → fetch audio → same as upload
     GET  /api/status/{job_id}    Poll job status / result
     GET  /api/audio/{job_id}     Stream uploaded audio for playback (while available)
     GET  /health                 Uptime health check
@@ -12,6 +13,7 @@ Endpoints:
 
 import json
 import os
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -20,6 +22,7 @@ import redis
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from pydantic import BaseModel
 from rq import Queue
@@ -58,6 +61,9 @@ _lyrics_queue = Queue("lyrics_jobs", connection=_redis_rq)
 # ── Config ────────────────────────────────────────────────────────────────────
 _MAX_BYTES = int(os.getenv("MAX_FILE_SIZE_MB", "20")) * 1024 * 1024
 _ALLOWED_EXTS = {"mp3", "wav", "ogg", "flac", "m4a"}
+# YouTube audio is ~1 MB/min; the duration cap (youtube.MAX_DURATION_S) is
+# the real limit, this only guards against a pathological stream.
+_MAX_YT_BYTES = 200 * 1024 * 1024
 _RESULT_TTL = 3600  # 1 hour
 _URI_TTL = 3600
 _DEFAULT_JOB_TIMEOUT_S = 7200  # 2 h — CPU separation + ASR, plus a one-off
@@ -137,6 +143,68 @@ async def analyze(
         )
 
     job_id = str(uuid.uuid4())
+    if file.filename:
+        _redis_kv.setex(f"name:{job_id}", _RESULT_TTL, Path(file.filename).stem)
+    # stored copy is audio.<ext>; the original name feeds LRCLIB lookup
+    _store_and_enqueue(
+        job_id, contents, ext, language,
+        filename=Path(file.filename or "").name or None,
+        meta={"title": title, "artist": artist, "album": album},
+    )
+    return AnalyzeResponse(job_id=job_id)
+
+
+class AnalyzeUrlRequest(BaseModel):
+    url: str
+    language: str | None = None
+    title: str | None = None
+    artist: str | None = None
+
+
+@app.post("/api/analyze-url", response_model=AnalyzeResponse, status_code=202)
+async def analyze_url(req: AnalyzeUrlRequest):
+    """Fetch a YouTube video's audio, then analyse it exactly like an upload.
+
+    The download runs here (a few seconds) rather than in a worker so a bad
+    link fails the request immediately instead of failing two queued jobs.
+    """
+    import youtube
+
+    if not youtube.is_youtube_url(req.url):
+        raise HTTPException(status_code=400, detail="Only YouTube links are supported.")
+    with tempfile.TemporaryDirectory(prefix="chordex_yt_") as tmp:
+        try:
+            path, hints = await run_in_threadpool(youtube.fetch_audio, req.url, Path(tmp))
+        except youtube.YouTubeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        contents = path.read_bytes()
+        ext = path.suffix.lstrip(".").lower()
+    if len(contents) > _MAX_YT_BYTES:
+        raise HTTPException(status_code=413, detail="Downloaded audio is too large.")
+
+    job_id = str(uuid.uuid4())
+    _store_and_enqueue(
+        job_id, contents, ext, req.language,
+        filename=f"{hints['name']}.{ext}",
+        meta={
+            # user-typed fields win over YouTube's music metadata
+            "title": req.title or hints.get("title"),
+            "artist": req.artist or hints.get("artist"),
+        },
+    )
+    _redis_kv.setex(f"name:{job_id}", _RESULT_TTL, hints["name"])
+    return AnalyzeResponse(job_id=job_id)
+
+
+def _store_and_enqueue(
+    job_id: str,
+    contents: bytes,
+    ext: str,
+    language: str | None,
+    *,
+    filename: str | None,
+    meta: dict[str, str | None],
+) -> None:
     try:
         uri = storage.save_upload(job_id, contents, ext)
     except Exception as exc:
@@ -148,10 +216,7 @@ async def analyze(
     _redis_kv.setex(f"uri:{job_id}", _URI_TTL, uri)
 
     lang = (language or "").strip().lower() or None
-    meta = {
-        k: (v or "").strip() or None
-        for k, v in (("title", title), ("artist", artist), ("album", album))
-    }
+    meta = {k: (v or "").strip() or None for k, v in meta.items()}
     # S3: split enqueue — chords first (fast, renders in seconds), lyrics
     # second (slow). RQ job ids are namespaced so both can be tracked.
     _chord_queue.enqueue(
@@ -165,15 +230,12 @@ async def analyze(
         args=(uri,),
         kwargs={
             "language": lang,
-            # stored copy is audio.<ext>; the original name feeds LRCLIB lookup
-            "filename": Path(file.filename or "").name or None,
+            "filename": filename,
             **{k: v for k, v in meta.items() if v},
         },
         job_id=f"{job_id}:lyrics",
         job_timeout=_job_timeout(),
     )
-
-    return AnalyzeResponse(job_id=job_id)
 
 
 def _job_progress(job_id: str) -> tuple[str | None, float | None]:
@@ -325,6 +387,9 @@ async def get_status(job_id: str):
             if state == "failed" and error and not result.get("lyrics_error"):
                 result["lyrics_error"] = error
         _attach_sheet(job_id, result)
+        name = _redis_kv.get(f"name:{job_id}")
+        if name:
+            result["source_name"] = name
         resp = StatusResponse(status="done", result=result)
         if result.get("lyrics_status") in ("pending", "processing"):
             qn, qp, qd = _queue_info(f"{job_id}:lyrics", _lyrics_queue)

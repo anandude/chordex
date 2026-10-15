@@ -71,3 +71,7 @@ pytest>=8.0.0
 # Not imported by the API/worker — score_chords.py loads it lazily.
 # NOTE: targets the mir_eval>=0.8 chord API (frame-sampled label sequences).
 mir_eval>=0.8
+# YouTube links (POST /api/analyze-url). [default] pulls yt-dlp-ejs, which
+# YouTube now needs for its JS challenges (with deno/node on PATH). yt-dlp
+# breaks whenever YouTube changes — upgrade it first if links stop working.
+yt-dlp[default]>=2026.8.19
