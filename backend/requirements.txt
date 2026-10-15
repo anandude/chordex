@@ -45,6 +45,9 @@ mutagen==1.47.0
 # Phase 3 HF fine-tunes (adalat-ai, thennal, vasista22) load via transformers.
 # Optional — stock faster-whisper ids + legacy fallback work without it.
 transformers>=4.37
+# Indic-Transcribe-core (default Malayalam ASR) tokenizer. The model's own
+# code ships in its gated HF repo (bodhan-ai/indic-transcribe-core).
+sentencepiece>=0.1.99
 torchaudio>=2.0  # CPU-only: pip install torchaudio --index-url https://download.pytorch.org/whl/cpu
 hf_transfer>=0.1  # fast HF downloads (unauthenticated traffic is throttled)
 # Phase 4 CTC forced alignment: torchaudio.pipelines.MMS_FA acoustic model

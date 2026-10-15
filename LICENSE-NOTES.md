@@ -10,6 +10,7 @@ PyPI, live API) before wiring. Verify again before changing pins.
 | faster-whisper / CTranslate2 runtime | code | MIT | ✅ |
 | OpenAI Whisper stock ids (`small`, `large-v3-turbo`) | weights | Apache-2.0 lineage | ✅ |
 | `adalat-ai/whisper-medium-ml-rmft`, `whisper-medium-hi-high-lr`, `whisper-small-ml-rmft`, `whisper-small-hi-high-lr` | weights | Apache-2.0 (model cards) | ✅ |
+| `bodhan-ai/indic-transcribe-core` (default ml ASR; Canary-1B-v2 base) | weights + model code (reviewed: no network/subprocess/pickle) | **Indic Open Model License v1.0**, **gated** (HF login + accepted terms); base model nvidia/canary-1b-v2 terms also apply | ✅ personal use; commercial OK with conditions (attribution, share-alike for derivatives, written sign-off before offering it as a hosted API to others) |
 | `thennal/whisper-medium-ml` | weights | Apache-2.0 | ✅ |
 | `vasista22/whisper-hindi-large-v2` | weights | Apache-2.0 | ✅ |
 | `Sanat-agrwl/indic-crisperwhisper-hindi-v1` (brief said `user71/…` — stale, corrected) | weights + custom retok code | MIT | ✅ (custom code path) |
