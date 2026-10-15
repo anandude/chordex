@@ -1,0 +1,21 @@
+{
+  "_comment": "Phase-4 benchmark set (timing + accuracy). audio paths are relative to the repo root and stay local-only. ref_lyrics = native-script text (eval/refs/), ref_chordpro = ChordPro sheet with chords on the exact syllable (eval/refs/*.cho), ref_onsets = Audacity label track of hand-marked word onsets. Missing/placeholder refs are reported as 'not measurable', never guessed.",
+  "songs": [
+    {
+      "id": "hi_chahun",
+      "audio": "test-assets/songs/Chahun Main Ya Naa Aashiqui 2 320 Kbps.mp3",
+      "language": "hi",
+      "ref_lyrics": "eval/refs/hi_chahun.txt",
+      "ref_chordpro": "eval/refs/hi_chahun.cho",
+      "ref_onsets": "eval/refs/hi_chahun.onsets.txt"
+    },
+    {
+      "id": "ml_mazha",
+      "audio": "test-assets/songs/Mazha Njaan Arinjirunnilla  Dr. Patient  Hariharan  Bennet Veetraag  Rafeeq Ahammed.mp3",
+      "language": "ml",
+      "ref_lyrics": "eval/refs/ml_mazha.txt",
+      "ref_chordpro": "eval/refs/ml_mazha.cho",
+      "ref_onsets": "eval/refs/ml_mazha.onsets.txt"
+    }
+  ]
+}
