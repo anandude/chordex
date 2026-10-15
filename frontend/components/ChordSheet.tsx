@@ -1,33 +1,26 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
-import { ChordEvent, LyricLine, LyricWord } from "@/lib/api";
-import { buildSheet, activeRowIndex } from "@/lib/chordSheet";
+import { ChordEvent, Sheet, SheetRow, SheetWord } from "@/lib/api";
+import {
+  activeRowIndex,
+  activeWordIndex,
+  chordsOnlySheet,
+  redundantChords,
+} from "@/lib/chordSheet";
 import { chordChipClass } from "@/lib/chordStyle";
 
 interface Props {
+  /** Display chords (transposed / Easy Mode) — same length and order as the
+   *  backend chord list, so sheet indices stay valid. */
   chords: ChordEvent[];
-  words?: LyricWord[];
-  lines?: LyricLine[];
-  /** Phase 5b: romanised display lines (native script stays canonical). */
-  romanLines?: LyricLine[];
+  sheet?: Sheet;
   script?: "native" | "roman" | "both";
   currentTime: number;
   activeChord: number | null;
+  hasLyrics: boolean;
   lyricsError?: string | null;
   onSeek: (time: number) => void;
-}
-
-function romanFor(
-  romanLines: LyricLine[] | undefined,
-  timestamp: number
-): string | null {
-  if (!romanLines) return null;
-  for (const l of romanLines) {
-    const end = l.end ?? l.timestamp + 999;
-    if (timestamp >= l.timestamp && timestamp < end) return l.text;
-  }
-  return null;
 }
 
 function formatTime(seconds: number): string {
@@ -36,18 +29,17 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/**
- * Chord chip. `size="sm"` hangs above a lyric word, `size="md"` fills a
- * chord-only row.
- */
+/** Chord chip. `size="sm"` hangs above lyrics, `size="md"` fills bar rows. */
 function ChordChip({
   chord,
   active,
+  faint,
   size = "sm",
   onClick,
 }: {
   chord: string;
   active?: boolean;
+  faint?: boolean;
   size?: "sm" | "md";
   onClick?: () => void;
 }) {
@@ -64,6 +56,7 @@ function ChordChip({
           ? "text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1 leading-tight"
           : "text-sm sm:text-base px-2.5 sm:px-3 py-1",
         active ? "bg-ink text-gold shadow-hard-sm" : chordChipClass(chord),
+        faint && !active ? "opacity-45 border-dashed" : "",
       ].join(" ")}
     >
       {chord}
@@ -71,40 +64,136 @@ function ChordChip({
   );
 }
 
+/** Split romanised text proportionally to the native segments. */
+function romanSegments(word: SheetWord): string[] {
+  const roman = word.roman ?? word.text;
+  const total = word.segs.reduce((n, s) => n + s.text.length, 0) || 1;
+  let acc = 0;
+  return word.segs.map((s) => {
+    const a = Math.round((acc / total) * roman.length);
+    acc += s.text.length;
+    const b = Math.round((acc / total) * roman.length);
+    return roman.slice(a, b);
+  });
+}
+
 export default function ChordSheet({
   chords,
-  words,
-  lines,
-  romanLines,
+  sheet,
   script = "native",
   currentTime,
   activeChord,
+  hasLyrics,
   lyricsError,
   onSeek,
 }: Props) {
-  const rows = useMemo(
-    () => buildSheet(chords, words, lines),
-    [chords, words, lines]
-  );
+  const view = useMemo(() => sheet ?? chordsOnlySheet(chords), [sheet, chords]);
+  const labels = useMemo(() => chords.map((c) => c.chord), [chords]);
+  const hidden = useMemo(() => redundantChords(view, labels), [view, labels]);
+  const rows = view.rows;
   const activeRow = activeRowIndex(rows, currentTime);
+  const activeWord = activeWordIndex(rows[activeRow], currentTime);
   const activeRowRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    activeRowRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-    });
+    activeRowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [activeRow]);
 
   if (!rows.length) return null;
+
+  const chip = (ci: number, opts: { faint?: boolean; size?: "sm" | "md" } = {}) =>
+    labels[ci] === undefined ? null : (
+      <ChordChip
+        key={ci}
+        chord={labels[ci]}
+        active={ci === activeChord}
+        faint={opts.faint}
+        size={opts.size}
+        onClick={() => onSeek(chords[ci].timestamp)}
+      />
+    );
+
+  const renderLine = (row: Extract<SheetRow, { kind: "line" }>, isActive: boolean) => {
+    const anyChord =
+      row.carry !== null ||
+      row.gaps.some((g) => g.chords.some((c) => !hidden.has(c))) ||
+      row.words.some((w) => w.segs.some((s) => s.chord !== null && !hidden.has(s.chord)));
+    const slot = (content: React.ReactNode) =>
+      anyChord ? (
+        <span className="flex h-7 sm:h-8 items-end gap-1 mb-0.5 pr-1">{content}</span>
+      ) : null;
+    const textCls = "font-lyrics text-lg sm:text-2xl leading-snug";
+
+    // A chord with no lyric under it: a held note / pause, or the carry chord.
+    const gapUnit = (key: string, ids: number[], faint = false) => {
+      const vis = ids.filter((c) => faint || !hidden.has(c));
+      if (!vis.length) return null;
+      return (
+        <span key={key} className="inline-flex flex-col">
+          {slot(vis.map((c) => chip(c, { faint })))}
+          <span className={`${textCls} opacity-30 select-none`} aria-hidden>
+            ·
+          </span>
+        </span>
+      );
+    };
+
+    const units: React.ReactNode[] = [];
+    if (row.carry !== null) units.push(gapUnit("carry", [row.carry], true));
+    row.gaps
+      .filter((g) => g.after_word < 0)
+      .forEach((g, gi) => units.push(gapUnit(`lead${gi}`, g.chords)));
+
+    row.words.forEach((w, k) => {
+      const romans = script === "roman" ? romanSegments(w) : null;
+      const wordActive = isActive && activeWord === k;
+      units.push(
+        // one word = one unbreakable unit; wrapping happens only between words
+        <span key={`w${k}`} className="inline-flex flex-col">
+          <span className="inline-flex items-end whitespace-nowrap">
+            {w.segs.map((s, si) => {
+              const showChord = s.chord !== null && !hidden.has(s.chord);
+              const last = si === w.segs.length - 1;
+              return (
+                <span key={si} className="inline-flex flex-col">
+                  {slot(showChord ? chip(s.chord as number) : null)}
+                  <span className="flex items-baseline">
+                    <span
+                      className={`${textCls} ${
+                        wordActive ? "bg-gold text-ink" : ""
+                      }`}
+                    >
+                      {romans ? romans[si] : s.text}
+                    </span>
+                    {/* mid-word extender when the chord is wider than the syllable */}
+                    {!last && (
+                      <span className="flex-1 min-w-0 border-b-2 border-dotted border-current opacity-40 mx-px mb-1.5" />
+                    )}
+                  </span>
+                </span>
+              );
+            })}
+          </span>
+          {script === "both" && w.roman && (
+            <span className="font-cl text-xs sm:text-sm italic opacity-70">{w.roman}</span>
+          )}
+        </span>
+      );
+      row.gaps
+        .filter((g) => g.after_word === k)
+        .forEach((g, gi) => units.push(gapUnit(`g${k}-${gi}`, g.chords)));
+    });
+
+    return (
+      <div className="flex flex-wrap items-end gap-x-2.5 gap-y-3 sm:gap-x-3">{units}</div>
+    );
+  };
 
   return (
     <section className="bg-paper text-ink border-2 border-black shadow-hard px-4 py-6 sm:px-8 sm:py-8">
       {rows.map((row, i) => {
         const active = i === activeRow;
-        const rowTone = active
-          ? "bg-ink text-paper"
-          : "hover:bg-ink/[0.04]";
+        const rowTone = active ? "bg-ink text-paper" : "hover:bg-ink/[0.04]";
 
         if (row.kind === "section") {
           return (
@@ -117,133 +206,65 @@ export default function ChordSheet({
           );
         }
 
-        if (row.kind === "chords") {
+        if (row.kind === "bars") {
+          const vis = row.chords
+            .map((ci, k) => [ci, row.beats[k]] as const)
+            .filter(([ci]) => !hidden.has(ci));
+          if (!vis.length) return null;
           return (
             <div
               key={i}
               ref={active ? activeRowRef : undefined}
-              onClick={() => onSeek(row.timestamp)}
+              onClick={() => onSeek(row.t)}
               className={`-mx-2 sm:-mx-3 px-2 sm:px-3 py-2.5 my-1 cursor-pointer transition-colors rounded-sm ${rowTone}`}
             >
-              <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-                {row.chords.map((ci) => (
-                  <ChordChip
-                    key={ci}
-                    chord={chords[ci].chord}
-                    active={ci === activeChord}
-                    size="md"
-                    onClick={() => onSeek(chords[ci].timestamp)}
-                  />
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                {vis.map(([ci, beats]) => (
+                  <span key={ci} className="inline-flex items-center gap-1.5">
+                    {chip(ci, { size: "md" })}
+                    <span className="font-cl text-xs opacity-50 tracking-widest" aria-hidden>
+                      {"·".repeat(Math.min(7, Math.max(0, beats - 1)))}
+                    </span>
+                  </span>
                 ))}
               </div>
             </div>
           );
         }
 
-        // lyric row — chords hang above their word
-        const hasChords = row.words.some((w) => w.chords.length > 0);
-        const roman =
-          script === "native" ? null : romanFor(romanLines, row.timestamp);
-
         return (
           <div
             key={i}
             ref={active ? activeRowRef : undefined}
-            onClick={() => onSeek(row.timestamp)}
-            className={`-mx-2 sm:-mx-3 px-2 sm:px-3 py-2 my-0.5 cursor-pointer transition-colors rounded-sm group ${rowTone}`}
+            onClick={() => onSeek(row.t)}
+            className={`-mx-2 sm:-mx-3 px-2 sm:px-3 py-2 my-0.5 cursor-pointer transition-colors rounded-sm group ${rowTone} ${
+              row.chorus ? "border-l-4 border-gold" : ""
+            }`}
           >
             <div className="flex items-start gap-3 sm:gap-5">
-              {/* timestamp gutter */}
               <span
-                className={`shrink-0 w-9 sm:w-11 pt-1 text-right font-cl text-xs select-none ${
-                  active
-                    ? "text-paper/70"
-                    : "text-ink/55 group-hover:text-ink/80"
+                className={`shrink-0 w-9 sm:w-11 pt-1 text-right font-cl text-xs select-none self-end mb-1.5 ${
+                  active ? "text-paper/70" : "text-ink/55 group-hover:text-ink/80"
                 }`}
               >
-                {formatTime(row.timestamp)}
+                {formatTime(row.t)}
               </span>
-
-              <div className="flex-1 min-w-0">
-                {script === "roman" ? (
-                  <>
-                    {hasChords && (
-                      <div className="flex flex-wrap gap-1 mb-1">
-                        {Array.from(
-                          new Set(row.words.flatMap((w) => w.chords))
-                        ).map((ci) => (
-                          <ChordChip
-                            key={ci}
-                            chord={chords[ci].chord}
-                            active={ci === activeChord}
-                            onClick={() => onSeek(chords[ci].timestamp)}
-                          />
-                        ))}
-                      </div>
-                    )}
-                    <p className="font-lyrics text-lg sm:text-2xl leading-relaxed">
-                      {roman ?? row.words.map((w) => w.word).join(" ")}
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <div
-                      className={`flex flex-wrap items-end ${
-                        hasChords
-                          ? "gap-x-2.5 gap-y-2 sm:gap-x-3"
-                          : "gap-x-2 sm:gap-x-2.5"
-                      }`}
-                    >
-                      {row.words.map((w, wi) => {
-                        const wordActive = w.chords.includes(activeChord ?? -1);
-                        return (
-                          <span key={wi} className="inline-flex flex-col items-start">
-                            {hasChords && (
-                              <span className="flex h-6 sm:h-7 items-end gap-1 mb-0.5">
-                                {w.chords.map((ci) => (
-                                  <ChordChip
-                                    key={ci}
-                                    chord={chords[ci].chord}
-                                    active={ci === activeChord}
-                                    onClick={() => onSeek(chords[ci].timestamp)}
-                                  />
-                                ))}
-                              </span>
-                            )}
-                            <span
-                              className={`font-lyrics text-lg sm:text-2xl leading-snug ${
-                                wordActive ? "bg-gold text-ink px-0.5 -mx-0.5" : ""
-                              }`}
-                            >
-                              {w.word}
-                            </span>
-                          </span>
-                        );
-                      })}
-                    </div>
-                    {roman && (
-                      <p className="font-cl text-sm sm:text-base italic opacity-70 mt-1">
-                        {roman}
-                      </p>
-                    )}
-                  </>
-                )}
-              </div>
+              <div className="flex-1 min-w-0">{renderLine(row, active)}</div>
             </div>
           </div>
         );
       })}
 
-      {(!words || !words.length) && (!lines || !lines.length) && (
+      {!hasLyrics && (
         <p className="font-cl text-ink/65 text-sm mt-5 text-center">
           {lyricsError && lyricsError !== "disabled"
             ? `Lyrics unavailable (${lyricsError}) — showing chords only.`
             : "No vocals detected — chords only."}
         </p>
       )}
-      {!(!words || !words.length) && lyricsError && (
+      {hasLyrics && lyricsError && (
         <p className="font-cl text-ink/60 text-xs sm:text-sm mt-5 text-center">
-          Lyrics were partially recovered ({lyricsError}).
+          Lyrics note: {lyricsError}
         </p>
       )}
     </section>

@@ -1,25 +1,8 @@
-// Builds the playable chord sheet: lyric lines with chord changes anchored
-// to the exact word where they strike, chords-only rows for instrumental
-// stretches, and section labels for long gaps.
+// Helpers for the chord sheet. The sheet itself (which word each chord change
+// sits on) is built and tested in the backend — backend/pipeline/sheet.py —
+// so this file only answers "what is playing now" and exports text.
 
-import { ChordEvent, LyricLine, LyricWord } from "./api";
-
-export interface SheetWord {
-  word: string;
-  timestamp: number;
-  end?: number;
-  chords: number[]; // indices into the chords array — changes land here
-}
-
-export type SheetRow =
-  | { kind: "lyric"; timestamp: number; end?: number; words: SheetWord[] }
-  | { kind: "chords"; timestamp: number; end?: number; chords: number[] }
-  | { kind: "section"; timestamp: number; label: string };
-
-const WORD_GAP = 0.55; // silence that splits lyric lines
-const MAX_LINE_WORDS = 12;
-const ANCHOR_TOLERANCE = 0.6; // how far before a line/word a chord can sit
-const SECTION_GAP = 8; // instrumental stretch worth labeling
+import { ChordEvent, Sheet, SheetRow } from "./api";
 
 export function activeChordIndex(
   chords: Array<{ timestamp: number; end?: number }>,
@@ -37,171 +20,110 @@ export function activeChordIndex(
   return null;
 }
 
+/** The active row is the last non-section row that has started. */
 export function activeRowIndex(rows: SheetRow[], time: number): number {
-  // the active row is the last row that has started
   let active = -1;
   for (let i = 0; i < rows.length; i++) {
-    if (rows[i].timestamp <= time) active = i;
+    if (rows[i].kind === "section") continue;
+    if (rows[i].t <= time) active = i;
     else break;
   }
   return active;
 }
 
-interface WordLike {
-  word: string;
-  timestamp: number;
-  end?: number;
+/** Index of the word being sung in a lyric row (null between words). */
+export function activeWordIndex(
+  row: SheetRow | undefined,
+  time: number
+): number | null {
+  if (!row || row.kind !== "line") return null;
+  for (let i = row.words.length - 1; i >= 0; i--) {
+    const w = row.words[i];
+    if (time >= w.t) return time < Math.max(w.end, w.t + 0.15) ? i : null;
+  }
+  return null;
 }
 
-function groupWordsIntoLines(
-  words: WordLike[],
-  gap: number,
-  maxWords: number
-): WordLike[][] {
-  const lines: WordLike[][] = [];
-  let current: WordLike[] = [];
-  for (const w of words) {
-    const prev = current[current.length - 1];
-    const pause = prev
-      ? w.timestamp - (prev.end ?? prev.timestamp)
-      : 0;
-    if (prev && (pause > gap || current.length >= maxWords)) {
-      lines.push(current);
-      current = [];
+/** Chords-only fallback when the backend could not build a sheet. */
+export function chordsOnlySheet(chords: ChordEvent[]): Sheet {
+  const idx = chords.flatMap((c, i) => (c.chord === "N" ? [] : [i]));
+  return {
+    version: 1,
+    beat: 0.5,
+    rows: idx.length
+      ? [
+          {
+            kind: "bars",
+            t: chords[idx[0]].timestamp,
+            end: chords[idx[idx.length - 1]].end ?? 0,
+            chords: idx,
+            beats: idx.map(() => 4),
+          },
+        ]
+      : [],
+  };
+}
+
+/**
+ * Labels to actually show: a chord whose displayed label equals the previous
+ * displayed chord (e.g. Easy Mode turns C → Cmaj7 → C into C C C) is not a
+ * change for the player, so it is hidden. Returns a Set of hidden indices.
+ */
+export function redundantChords(sheet: Sheet, labels: string[]): Set<number> {
+  // chord indices are in time order, so sorting them gives play order
+  const shown: number[] = [];
+  for (const r of sheet.rows) {
+    if (r.kind === "bars") shown.push(...r.chords);
+    if (r.kind === "line") {
+      r.words.forEach((w) =>
+        w.segs.forEach((s) => s.chord !== null && shown.push(s.chord))
+      );
+      r.gaps.forEach((g) => shown.push(...g.chords));
     }
-    current.push(w);
   }
-  if (current.length) lines.push(current);
-  return lines;
+  shown.sort((a, b) => a - b);
+  const hidden = new Set<number>();
+  for (let i = 1; i < shown.length; i++) {
+    if (labels[shown[i]] === labels[shown[i - 1]]) hidden.add(shown[i]);
+  }
+  return hidden;
 }
 
-function lineEnd(words: WordLike[]): number {
-  const last = words[words.length - 1];
-  return last.end ?? last.timestamp;
-}
-
-// chunk a chord-only stretch into rows: break on time gaps or row width
-function chunkChords(indices: number[], chords: ChordEvent[]): number[][] {
-  const rows: number[][] = [];
-  let current: number[] = [];
-  for (const i of indices) {
-    const prev = current[current.length - 1];
-    const prevEnd = prev != null ? chords[prev].end ?? chords[prev].timestamp : 0;
-    if (prev != null && (chords[i].timestamp - prevEnd > 4 || current.length >= 8)) {
-      rows.push(current);
-      current = [];
-    }
-    current.push(i);
-  }
-  if (current.length) rows.push(current);
-  return rows;
-}
-
-export function buildSheet(
-  chords: ChordEvent[],
-  words?: LyricWord[],
-  lines?: LyricLine[]
-): SheetRow[] {
-  const rows: SheetRow[] = [];
-  if (!chords.length) return rows;
-
-  // No word timings at all — a chord-only sheet
-  const usableWords: WordLike[] =
-    words && words.length
-      ? words
-      : (lines ?? []).map((l) => ({
-          word: l.text,
-          timestamp: l.timestamp,
-          end: l.end,
-        }));
-  const pseudoLines = !(words && words.length); // lines as atomic words
-
-  if (!usableWords.length) {
-    flushChords(chords.map((_, i) => i), 0, true);
-    return rows;
-  }
-
-  const wordLines = pseudoLines
-    ? usableWords.map((w) => [w])
-    : groupWordsIntoLines(usableWords, WORD_GAP, MAX_LINE_WORDS);
-
-  let chordPtr = 0;
-
-  function flushChords(indices: number[], beforeTs: number, leading: boolean) {
-    if (!indices.length) return;
-    const spanStart = chords[indices[0]].timestamp;
-    const gapSpan = beforeTs - spanStart;
-    if (gapSpan > SECTION_GAP || (leading && spanStart > SECTION_GAP)) {
-      rows.push({
-        kind: "section",
-        timestamp: Math.max(0, spanStart - 0.01),
-        label: leading ? "INTRO" : "INSTRUMENTAL",
+/** ChordPro text (`[G]Wise men [D]say`) for copy/export. */
+export function sheetToChordPro(
+  sheet: Sheet,
+  labels: string[],
+  header: string[] = []
+): string {
+  const hidden = redundantChords(sheet, labels);
+  const tag = (c: number) => (hidden.has(c) ? "" : `[${labels[c]}]`);
+  const out: string[] = [...header];
+  for (const r of sheet.rows) {
+    if (r.kind === "section") {
+      out.push("", `{comment: ${r.label}}`);
+    } else if (r.kind === "bars") {
+      out.push(
+        r.chords
+          .filter((c) => !hidden.has(c))
+          .map((c) => `[${labels[c]}]`)
+          .join(" ")
+      );
+    } else {
+      const gapsAt = (k: number) =>
+        r.gaps
+          .filter((g) => g.after_word === k)
+          .flatMap((g) => g.chords.map(tag))
+          .join("");
+      const words = r.words.map((w, k) => {
+        const body = w.segs
+          .map((s) => (s.chord !== null ? tag(s.chord) : "") + s.text)
+          .join("");
+        const gap = gapsAt(k);
+        return gap ? `${body} ${gap}` : body;
       });
-    }
-    for (const chunk of chunkChords(indices, chords)) {
-      rows.push({
-        kind: "chords",
-        timestamp: chords[chunk[0]].timestamp,
-        end: chords[chunk[chunk.length - 1]].end,
-        chords: chunk,
-      });
+      const lead = gapsAt(-1);
+      out.push((lead ? `${lead} ` : "") + words.join(" "));
     }
   }
-
-  for (let li = 0; li < wordLines.length; li++) {
-    const wl = wordLines[li];
-    const start = wl[0].timestamp;
-    const prevLine = wordLines[li - 1];
-    const prevEnd = prevLine ? lineEnd(prevLine) : 0;
-
-    // chords that belong to the instrumental stretch before this line
-    const buffer: number[] = [];
-    while (
-      chordPtr < chords.length &&
-      chords[chordPtr].timestamp < start - ANCHOR_TOLERANCE
-    ) {
-      if (chords[chordPtr].chord !== "N") buffer.push(chordPtr);
-      chordPtr++;
-    }
-    flushChords(buffer, Math.max(prevEnd + 0.8, start - ANCHOR_TOLERANCE), li === 0);
-
-    // anchor in-line chords to their word
-    const sheetWords: SheetWord[] = wl.map((w) => ({
-      word: w.word,
-      timestamp: w.timestamp,
-      end: w.end,
-      chords: [],
-    }));
-    while (
-      chordPtr < chords.length &&
-      chords[chordPtr].timestamp < lineEnd(wl) + ANCHOR_TOLERANCE
-    ) {
-      const ts = chords[chordPtr].timestamp;
-      if (chords[chordPtr].chord !== "N") {
-        // first word whose span contains or follows the chord strike
-        let anchor = sheetWords.findIndex(
-          (w) => (w.end ?? w.timestamp + 0.35) > ts
-        );
-        if (anchor === -1) anchor = sheetWords.length - 1;
-        sheetWords[anchor].chords.push(chordPtr);
-      }
-      chordPtr++;
-    }
-    rows.push({
-      kind: "lyric",
-      timestamp: start,
-      end: lineEnd(wl),
-      words: sheetWords,
-    });
-  }
-
-  // trailing instrumental/outro chords
-  const tail: number[] = [];
-  while (chordPtr < chords.length) {
-    if (chords[chordPtr].chord !== "N") tail.push(chordPtr);
-    chordPtr++;
-  }
-  flushChords(tail, Infinity, false);
-
-  return rows;
+  return out.join("\n").trim() + "\n";
 }

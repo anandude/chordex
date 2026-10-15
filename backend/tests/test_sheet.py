@@ -207,3 +207,19 @@ def test_easy_mode_and_transpose_only_relabel():
     assert [(c["timestamp"], c["end"]) for c in easy] == [
         (c["timestamp"], c["end"]) for c in chords]
     assert build_sheet(easy, WORDS, beats=BEATS) == build_sheet(chords, WORDS, beats=BEATS)
+
+
+def test_status_attaches_romanised_sheet(monkeypatch):
+    import main
+
+    store = {}
+    monkeypatch.setattr(main._redis_kv, "get", lambda k: store.get(k))
+    monkeypatch.setattr(main._redis_kv, "setex", lambda k, ttl, v: store.__setitem__(k, v))
+    result = {"chords": [C("G", 0.0, 2.0)], "beats": BEATS[:10], "tempo": 120.0,
+              "lyrics": [W("मैं", 0.1), W("या", 0.5)], "lyric_lines": [],
+              "lyrics_status": "done", "lyrics_language": "hi"}
+    main._attach_sheet("j1", result)
+    words = line_rows(result["sheet"])[0]["words"]
+    assert words[0]["segs"][0]["chord"] == 0
+    assert all(w.get("roman") and w["roman"].isascii() for w in words)
+    assert "sheet:j1" in store  # final → cached

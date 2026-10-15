@@ -7,7 +7,7 @@ import Image from "next/image";
 import { audioUrl, cancelJob, getJobStatus } from "@/lib/api";
 import { transposeKeyLabel, transposeProgression } from "@/lib/transpose";
 import { applyEasyMode } from "@/lib/easyChords";
-import { activeChordIndex } from "@/lib/chordSheet";
+import { activeChordIndex, sheetToChordPro } from "@/lib/chordSheet";
 import AudioPlayer from "@/components/AudioPlayer";
 import NowNextBar from "@/components/NowNextBar";
 import ChordSheet from "@/components/ChordSheet";
@@ -184,15 +184,17 @@ export default function ResultsPage({
   const activeIndex = activeChordIndex(displayChords, playhead);
 
   const handleCopy = async () => {
-    const text = formatProgression(displayChords, {
-      easy: easyMode,
-      capo: easy?.capo,
-    });
-    const lines = data?.result?.lyric_lines;
+    // With lyrics: ChordPro (chords inline on the exact syllable); without:
+    // the timestamped progression.
+    const sheet = data?.result?.sheet;
+    const hasLines = sheet?.rows.some((r) => r.kind === "line");
+    const header = easyMode
+      ? [`{comment: Easy mode · ${easy?.capo ? `Capo ${easy.capo}` : "No capo"}}`]
+      : [];
     const full =
-      lines && lines.length
-        ? `${text}\n\n--- Lyrics ---\n${lines.map((l) => l.text).join("\n")}`
-        : text;
+      sheet && hasLines
+        ? sheetToChordPro(sheet, displayChords.map((c) => c.chord), header)
+        : formatProgression(displayChords, { easy: easyMode, capo: easy?.capo });
     try {
       await navigator.clipboard.writeText(full);
       setCopied(true);
@@ -477,8 +479,9 @@ export default function ResultsPage({
             </div>
 
             {/* The sheet */}
-            {result.lyric_lines_roman &&
-              result.lyric_lines_roman.length > 0 && (
+            {result.sheet?.rows.some(
+              (r) => r.kind === "line" && r.words.some((w) => w.roman)
+            ) && (
                 <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
                   <span className="font-cl text-paper-dim text-xs uppercase tracking-[0.2em]">
                     Script
@@ -512,9 +515,8 @@ export default function ResultsPage({
               )}
             <ChordSheet
               chords={displayChords}
-              words={result.lyrics}
-              lines={result.lyric_lines}
-              romanLines={result.lyric_lines_roman}
+              sheet={result.sheet}
+              hasLyrics={Boolean(result.lyrics?.length || result.lyric_lines?.length)}
               script={script}
               currentTime={playhead}
               activeChord={activeIndex}
