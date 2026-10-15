@@ -177,20 +177,6 @@ def run_lyrics(
                 lyrics["lyrics_models"] = lyrics_out["models"]
             if lyrics_out.get("cleaned"):
                 lyrics["lyrics_cleaned"] = True
-            # Phase 5b romanisation (display aid; canonical stays native-script)
-            try:
-                from pipeline.cleanup import romanise_lines
-
-                lyrics["lyric_lines_roman"] = [
-                    {"timestamp": l["timestamp"], "end": l.get("end"),
-                     "text": l.get("roman", l.get("text", ""))}
-                    for l in romanise_lines(
-                        lyrics_out.get("lines", []),
-                        lyrics_out.get("language") or language,
-                    )
-                ] if lyrics_out.get("lines") else []
-            except Exception:
-                lyrics["lyric_lines_roman"] = []
             if lyrics_out.get("error"):
                 lyrics["lyrics_error"] = lyrics_out["error"]
             lyrics["lyrics_status"] = "done"

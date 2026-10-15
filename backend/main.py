@@ -18,7 +18,7 @@ from typing import Literal
 
 import redis
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -395,8 +395,27 @@ async def cancel_job(job_id: str):
     return {"job_id": job_id, "status": "cancelled"}
 
 
+def _byte_range(header: str | None, size: int) -> tuple[int, int] | None:
+    """Parse a single ``bytes=a-b`` / ``bytes=a-`` / ``bytes=-n`` range."""
+    if not header or not header.startswith("bytes=") or "," in header:
+        return None
+    a, _, b = header[len("bytes="):].strip().partition("-")
+    try:
+        if a == "":
+            n = int(b)
+            start, end = max(0, size - n), size - 1
+        else:
+            start = int(a)
+            end = min(int(b), size - 1) if b else size - 1
+    except ValueError:
+        return None
+    if start > end or start >= size:
+        return None
+    return start, end
+
+
 @app.get("/api/audio/{job_id}")
-async def get_audio(job_id: str):
+async def get_audio(job_id: str, request: Request):
     """Stream the uploaded audio for in-browser playback (while still stored)."""
     uri = _redis_kv.get(f"uri:{job_id}")
     if not uri:
@@ -414,14 +433,15 @@ async def get_audio(job_id: str):
             status_code=404, detail=f"Audio unavailable: {exc}"
         ) from exc
 
-    return Response(
-        content=data,
-        media_type=content_type,
-        headers={
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "private, max-age=3600",
-        },
-    )
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
+    # Honour Range so the player can seek (Safari refuses media without it).
+    rng = _byte_range(request.headers.get("range"), len(data))
+    if rng is not None:
+        start, end = rng
+        headers["Content-Range"] = f"bytes {start}-{end}/{len(data)}"
+        return Response(content=data[start:end + 1], status_code=206,
+                        media_type=content_type, headers=headers)
+    return Response(content=data, media_type=content_type, headers=headers)
 
 
 @app.get("/health")

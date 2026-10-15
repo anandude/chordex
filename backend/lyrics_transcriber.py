@@ -3,8 +3,6 @@ lyrics_transcriber.py
 ---------------------
 Word-level lyrics. Two layers:
 
-* Legacy faster-whisper path (``_transcribe``) — unchanged behaviour, used as
-  the ASR fallback and when the new pipeline is disabled.
 * Pipeline orchestration (``transcribe_lyrics``) — Phase 1→5 chain:
   separate → lookup/ASR → align → clean. Each stage is config-flagged,
   independently cached, and degrades to the next option on failure.
@@ -28,25 +26,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 from typing import Any
 
 logger = logging.getLogger(__name__)
-
-_models: dict[str, Any] = {}
-
-# English does fine on `small`; Hindi/Malayalam get `large-v3-turbo` —
-# close to large-v3 quality at a fraction of the decoder cost. First use
-# of a new model downloads it (turbo is ~1.6 GB).
-_DEFAULT_MODEL_OVERRIDES = {"hi": "large-v3-turbo", "ml": "large-v3-turbo"}
-
-# Script/context bias for the decoder's first window — stops Devanagari/
-# Malayalam output drifting into romanization or Urdu-script mixes.
-_INITIAL_PROMPTS = {
-    "hi": "यह एक हिंदी गाना है।",
-    "ml": "ഇതൊരു മലയാളം ഗാനമാണ്.",
-    "en": None,
-}
 
 _WORD_GAP = 0.55  # silence that splits lyric lines
 _MAX_LINE_WORDS = 12
@@ -59,43 +41,6 @@ def lyrics_enabled() -> bool:
         "no",
         "off",
     }
-
-
-def _model_overrides() -> dict[str, str]:
-    raw = os.getenv("WHISPER_MODEL_OVERRIDES", "").strip()
-    if raw:
-        try:
-            parsed = json.loads(raw)
-            return {str(k): str(v) for k, v in parsed.items()}
-        except (ValueError, TypeError):
-            logger.warning("Invalid WHISPER_MODEL_OVERRIDES JSON, using defaults")
-    return dict(_DEFAULT_MODEL_OVERRIDES)
-
-
-def resolve_model_name(language: str | None) -> str:
-    """Pick the model for a job: per-language override, else the default."""
-    name = os.getenv("WHISPER_MODEL", "small").strip() or "small"
-    if language:
-        overrides = _model_overrides()
-        name = overrides.get(language, name)
-    return name
-
-
-def _get_model(name: str):
-    if name in _models:
-        return _models[name]
-
-    from faster_whisper import WhisperModel
-
-    device = os.getenv("WHISPER_DEVICE", "cpu").strip()
-    compute = os.getenv(
-        "WHISPER_COMPUTE_TYPE",
-        "int8" if device == "cpu" else "float16",
-    ).strip()
-
-    logger.info("Loading Whisper model=%s device=%s compute=%s", name, device, compute)
-    _models[name] = WhisperModel(name, device=device, compute_type=compute)
-    return _models[name]
 
 
 def _lines_from_words(
@@ -130,38 +75,6 @@ def _lines_from_words(
         }
         for group in lines
     ]
-
-
-def _separate_vocals(file_path: str) -> str:
-    """Extract a vocals-only track with Demucs; returns the original path on
-    any problem. Sung vocals buried in a full mix are the #1 cause of garbage
-    lyrics — transcribing the isolated vocal fixes most of it."""
-    if os.getenv("SEPARATE_VOCALS", "1").strip().lower() in {"0", "false", "no", "off"}:
-        return file_path
-    out_path: str | None = None
-    try:
-        import soundfile as sf
-        from demucs.api import Separator
-
-        sep = Separator(model="htdemucs", device="cpu", progress=False)
-        _, stems = sep.separate_audio_file(file_path)
-        vocals = stems["vocals"].cpu()
-        fd, out_path = tempfile.mkstemp(suffix=".wav", prefix="chordex_vocals_")
-        os.close(fd)
-        sf.write(out_path, vocals.numpy().T, sep.samplerate)
-        logger.info("Vocal separation ok -> %s", out_path)
-        return out_path
-    except ImportError:
-        logger.info("demucs not installed — transcribing the full mix")
-        return file_path
-    except Exception as exc:
-        logger.warning("Vocal separation failed (%s) — falling back to full mix", exc)
-        if out_path and os.path.exists(out_path):
-            try:
-                os.unlink(out_path)
-            except OSError:
-                pass
-        return file_path
 
 
 def transcribe_lyrics(
@@ -250,8 +163,8 @@ def transcribe_lyrics(
         logger.warning("lyrics lookup failed (%s) — ASR fallback", exc)
     stages["lookup"] = round(_time.time() - t0, 2)
 
-    # ── Phase 1: isolate vocals (skipped when LRCLIB gave synced lines AND
-    # alignment is off — nothing left that needs audio) ──
+    # ── Phase 1: isolate vocals (always: ASR and forced alignment both use
+    # the stem, including after an LRCLIB hit) ──
     from pipeline.separation import separate_vocals
 
     _report("separating", 0.15)
@@ -295,20 +208,26 @@ def transcribe_lyrics(
             )
             stages["transcription"] = round(_time.time() - t0, 2)
             models["asr"] = str(asr_out.get("model", ""))
-            if asr_out.get("error") and not asr_out.get("lyrics"):
-                # HF fine-tune failed (missing dep/weights)? Fall back to the
-                # legacy stock faster-whisper path — never fail the job.
-                logger.warning("pipeline ASR failed (%s) — legacy fallback",
-                               asr_out.get("error"))
+            if asr_out.get("error") and not asr_out.get("lyrics") \
+                    and asr_out.get("model") != cfg.whisper_model:
+                # Fine-tune failed (missing weights/dep)? Retry the same
+                # pipeline with the stock WHISPER_MODEL — never fail the job.
+                logger.warning("ASR with %s failed (%s) — retrying with %s",
+                               asr_out.get("model"), asr_out.get("error"),
+                               cfg.whisper_model)
+                import dataclasses
+
                 t_fb = _time.time()
-                legacy = _transcribe(vocal_path, lang_hint)
+                # pin the language detected on the first try so the retry
+                # doesn't route straight back to the failed fine-tune
+                fb_lang = asr_out.get("language") or lang_hint
+                fb_cfg = dataclasses.replace(cfg, whisper_model_overrides_json=json.dumps(
+                    {fb_lang or "_": cfg.whisper_model}))
+                failed_model = asr_out.get("model", "?")
+                asr_out = transcribe_asr(vocal_path, language=fb_lang, cfg=fb_cfg,
+                                         progress=_report, audio=_stem_audio())
                 stages["transcription_fallback"] = round(_time.time() - t_fb, 2)
-                models["asr"] = (
-                    f"{asr_out.get('model', '?')}→{resolve_model_name(lang_hint)}"
-                )
-                legacy.update({"source": "asr", "stages": stages,
-                               "models": models})
-                return legacy
+                models["asr"] = f"{failed_model}→{asr_out.get('model', '')}"
             words = asr_out.get("lyrics", [])
             lines = asr_out.get("lines", [])
             lang_hint = asr_out.get("language") or lang_hint
@@ -379,71 +298,3 @@ def transcribe_lyrics(
     finally:
         # nothing to clean up — the stem lives in the shared stage cache
         pass
-
-
-def _transcribe(file_path: str, lang_hint: str | None) -> dict[str, Any]:
-    try:
-        model_name = resolve_model_name(lang_hint)
-        model = _get_model(model_name)
-        logger.info(
-            "Transcribing lyrics model=%s language=%s", model_name, lang_hint or "auto"
-        )
-        segments, info = model.transcribe(
-            file_path,
-            word_timestamps=True,
-            language=lang_hint,
-            vad_filter=True,
-            # music-tuned decoding: beam search, no cross-window context
-            # (repetition loops), hallucination guard, gentler VAD padding
-            beam_size=5,
-            condition_on_previous_text=False,
-            hallucination_silence_threshold=2.0,
-            vad_parameters={
-                "min_silence_duration_ms": 1000,
-                "speech_pad_ms": 200,
-            },
-            initial_prompt=_INITIAL_PROMPTS.get(lang_hint or ""),
-        )
-
-        words: list[dict[str, Any]] = []
-        raw_lines: list[dict[str, Any]] = []
-
-        for seg in segments:
-            text = (seg.text or "").strip()
-            if text:
-                raw_lines.append(
-                    {
-                        "timestamp": round(float(seg.start or 0.0), 3),
-                        "end": round(float(seg.end or 0.0), 3),
-                        "text": text,
-                    }
-                )
-            if seg.words:
-                for w in seg.words:
-                    token = (w.word or "").strip()
-                    if not token:
-                        continue
-                    words.append(
-                        {
-                            "timestamp": round(float(w.start or 0.0), 3),
-                            "end": round(float(w.end or 0.0), 3),
-                            "word": token,
-                        }
-                    )
-
-        lines = _lines_from_words(words, raw_lines)
-        lang = getattr(info, "language", None)
-        return {
-            "lyrics": words,
-            "lines": lines,
-            "language": lang,
-            "error": None,
-        }
-    except Exception as exc:
-        logger.exception("Lyrics transcription failed")
-        return {
-            "lyrics": [],
-            "lines": [],
-            "language": None,
-            "error": str(exc)[:500],
-        }

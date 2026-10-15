@@ -515,3 +515,33 @@ def test_voiced_windows_keep_sustained_singing():
     assert any(s <= 30.0 and e >= 31.0 for s, e in w)
     assert all(e - s <= 30.0 for s, e in w)
     assert sum(e - s for s, e in w) < 20.0          # silence/bleed excluded
+
+
+def test_failed_finetune_falls_back_to_stock_model(tmp_path, monkeypatch):
+    """A broken fine-tune never fails the job: same pipeline, stock model,
+    language pinned to what the first attempt detected."""
+    from pipeline import asr, lyrics_lookup
+    import lyrics_transcriber as lt
+
+    monkeypatch.setenv("LYRICS_SEPARATION_BACKEND", "none")
+    monkeypatch.setenv("LYRICS_ALIGNMENT", "0")
+    monkeypatch.setenv("LYRICS_LRCLIB", "0")
+    monkeypatch.setenv("WHISPER_MODEL", "small")
+    monkeypatch.setattr(lyrics_lookup, "get_metadata", lambda *a, **k: {})
+    calls = []
+
+    def fake_asr(path, language=None, cfg=None, progress=None, audio=None):
+        model = cfg.asr_model_for(language or "ml")
+        calls.append((language, model))
+        if model != "small":
+            return {"lyrics": [], "lines": [], "language": "ml", "error": "boom", "model": model}
+        return {"lyrics": [{"word": "x", "timestamp": 1.0, "end": 1.2}],
+                "lines": [{"timestamp": 1.0, "end": 1.2, "text": "x"}],
+                "language": "ml", "error": None, "model": model}
+
+    monkeypatch.setattr(asr, "transcribe_asr", fake_asr)
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"")
+    out = lt.transcribe_lyrics(str(wav))
+    assert calls[1] == ("ml", "small")
+    assert out["lyrics"] and "→small" in out["models"]["asr"]

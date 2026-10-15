@@ -28,3 +28,15 @@ def test_save_resolve_cleanup(tmp_path, monkeypatch):
 
     storage.cleanup(uri)
     assert not Path(path).exists()
+
+
+def test_audio_byte_range_parsing():
+    from main import _byte_range
+
+    assert _byte_range("bytes=0-99", 1000) == (0, 99)
+    assert _byte_range("bytes=900-", 1000) == (900, 999)
+    assert _byte_range("bytes=-100", 1000) == (900, 999)
+    assert _byte_range("bytes=0-5000", 1000) == (0, 999)
+    assert _byte_range("bytes=2000-", 1000) is None
+    assert _byte_range("bytes=0-1,5-6", 1000) is None
+    assert _byte_range(None, 1000) is None
