@@ -368,6 +368,11 @@ export default function ResultsPage({
         {/* Results */}
         {data?.status === "done" && result && (
           <div className="space-y-4 sm:space-y-5">
+            {result.source_name && (
+              <h1 className="font-bold text-paper text-lg sm:text-2xl tracking-tight break-words">
+                {result.source_name}
+              </h1>
+            )}
             {/* Stats */}
             <div className="flex flex-wrap items-center gap-2.5">
               <StatChip
