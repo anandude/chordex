@@ -91,6 +91,8 @@ export interface AnalysisResult {
   easy?: EasyModeResult;
   beats?: number[];
   sheet?: Sheet;
+  /** Upload filename stem or the YouTube video title. */
+  source_name?: string | null;
 }
 
 export interface JobStatus {
@@ -140,6 +142,43 @@ export async function uploadAudio(
   }
 
   return res.json();
+}
+
+export async function analyzeUrl(
+  url: string,
+  language?: string,
+  meta?: UploadMeta
+): Promise<{ job_id: string }> {
+  const res = await fetch(`${API_URL}/api/analyze-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url,
+      language: language && language !== "auto" ? language : null,
+      title: meta?.title || null,
+      artist: meta?.artist || null,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Couldn't fetch that link" }));
+    throw new Error(
+      typeof err.detail === "string" ? err.detail : "Couldn't fetch that link"
+    );
+  }
+  return res.json();
+}
+
+/** Mirrors backend/youtube.py's host allow-list. */
+export function isYouTubeUrl(text: string): boolean {
+  try {
+    const u = new URL(text.trim());
+    return (
+      /^https?:$/.test(u.protocol) &&
+      /^((www|m|music)\.)?youtube\.com$|^(www\.)?youtu\.be$/.test(u.hostname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function getJobStatus(jobId: string): Promise<JobStatus> {
