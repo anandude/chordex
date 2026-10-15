@@ -196,8 +196,9 @@ export UPLOAD_DIR="${UPLOAD_DIR:-/tmp/chordex_uploads}"
 export CHORD_ENGINE="${CHORD_ENGINE:-auto}"
 export ENABLE_LYRICS="${ENABLE_LYRICS:-1}"
 export WHISPER_MODEL="${WHISPER_MODEL:-small}"
-export WHISPER_DEVICE="${WHISPER_DEVICE:-cpu}"
-export WHISPER_COMPUTE_TYPE="${WHISPER_COMPUTE_TYPE:-int8}"
+export WHISPER_DEVICE="${WHISPER_DEVICE:-auto}"  # cuda when CTranslate2 can load cuBLAS 12
+# WHISPER_COMPUTE_TYPE unset → int8_float16 on cuda, int8 on cpu (pipeline/gpu.py)
+export LYRICS_DEVICE="${LYRICS_DEVICE:-auto}"   # demucs + aligner on the GPU when present
 export ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-http://localhost:3000}"
 export NEXT_PUBLIC_API_URL="${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
 mkdir -p "$UPLOAD_DIR"

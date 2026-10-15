@@ -14,8 +14,10 @@ PyPI, live API) before wiring. Verify again before changing pins.
 | `vasista22/whisper-hindi-large-v2` | weights | Apache-2.0 | ✅ |
 | `Sanat-agrwl/indic-crisperwhisper-hindi-v1` (brief said `user71/…` — stale, corrected) | weights + custom retok code | MIT | ✅ (custom code path) |
 | `ai4bharat/indic-conformer-600m-multilingual` | weights + `trust_remote_code` | MIT, **gated** (accept conditions + `HF_TOKEN`) | ✅ after gating |
-| `ctc-forced-aligner` package | code | BSD-2-Clause | ✅ |
-| MMS forced-aligner weights (`MahmoudAshraf/mms-300m-1130-forced-aligner`) | weights | **CC-BY-NC-4.0 (non-commercial)** | ❌ **BLOCKER for commercial use** — `pipeline/alignment.py::ALIGN_FN` is swappable; investigate an Apache/MIT alternative before this becomes load-bearing |
+| torchaudio (`MMS_FA` pipeline code) | code | BSD-2-Clause | ✅ |
+| MMS forced-alignment weights (`torchaudio.pipelines.MMS_FA`, Meta MMS) | weights | **CC-BY-NC-4.0 (non-commercial)** | ❌ **BLOCKER for commercial use** — `pipeline/alignment.py::ALIGN_FN` is swappable; investigate an Apache/MIT alternative before this becomes load-bearing |
+| `uroman` (romaniser for the aligner) | code | MIT-style permission text in package metadata (classifier says Apache) — permissive either way | ✅ |
+| `nvidia-cublas-cu12` (CUDA 12 cuBLAS for CTranslate2) | binary | NVIDIA proprietary redistributable (CUDA EULA) | ✅ personal use |
 | IndicXlit (`ai4bharat-transliteration==1.1.3`) | code + 11M-param model | MIT | ⚠️ wired but unrunnable here (needs fairseq/broken on py3.11); default roman backend is `indic-transliteration==2.3.82` (MIT, pure Python) |
 | LRCLIB (`https://lrclib.net`) | API + user-contributed lyrics | free, no key; contents user-contributed, **not licensed** | ⚠️ personal use ok; get clarity before scaling |
 

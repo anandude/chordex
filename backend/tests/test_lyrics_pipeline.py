@@ -27,7 +27,7 @@ def test_config_defaults_and_routing(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     cfg = LyricsConfig.from_env()
     assert cfg.separation_backend == "demucs"
-    assert cfg.demucs_model == "htdemucs_ft"
+    assert cfg.demucs_model == "htdemucs"
     assert cfg.asr_model_for("ml") == "adalat-ai/whisper-medium-ml-rmft"
     assert cfg.asr_model_for("hi") == "adalat-ai/whisper-medium-hi-high-lr"
     assert cfg.asr_model_for(None) == "small"
@@ -113,12 +113,9 @@ def test_metadata_filename_heuristics(tmp_path):
 
 # ── Phase 3: asr helpers ──────────────────────────────────────────────────
 
-def test_chunk_spans_and_seam_dedupe():
-    from pipeline.asr import _chunk_spans, _dedupe_seams, _drop_repeat_loops
+def test_seam_dedupe_and_repeat_loops():
+    from pipeline.asr import _dedupe_seams, _drop_repeat_loops
 
-    spans = _chunk_spans(30.0, 12.0, 2.0)
-    assert spans[0] == (0.0, 12.0) and spans[-1][1] == 30.0
-    assert all(e - s <= 12.0 for s, e in spans)
     words = [
         {"timestamp": 0.0, "end": 1.0, "word": "a"},
         {"timestamp": 0.5, "end": 1.5, "word": "a"},  # seam re-decode
@@ -193,16 +190,16 @@ def test_asr_announces_download_vs_load(monkeypatch):
 
 
 def test_transcribe_asr_reports_model_and_chunk_progress(tmp_path, monkeypatch):
+    import numpy as np
+
     from pipeline import asr
     from pipeline.config import LyricsConfig
 
     monkeypatch.setattr(asr, "repo_cache_state", lambda repo: (True, 1.0))
-    monkeypatch.setattr(asr, "_audible_spans",
-                        lambda *a, **k: [(0.0, 12.0), (12.0, 24.0)])
 
-    def fake_hf(path, lang, spans, model, cfg, on_chunk=None):
-        for i in range(len(spans)):
-            on_chunk(i + 1)
+    def fake_hf(y, lang, model, cfg, on_progress=None):
+        on_progress(0.5)
+        on_progress(1.0)
         return (
             [{"timestamp": 0.0, "end": 1.0, "word": "la"}],
             [{"timestamp": 0.0, "end": 1.0, "text": "la"}],
@@ -215,6 +212,7 @@ def test_transcribe_asr_reports_model_and_chunk_progress(tmp_path, monkeypatch):
         tmp_path / "vocals.wav", language="hi",
         cfg=LyricsConfig(whisper_model="small", cache_dir=str(tmp_path)),
         progress=lambda stage, pct: events.append((stage, pct)),
+        audio=np.zeros(16000, dtype=np.float32),
     )
 
     assert [s for s, _ in events] == ["loading_model", "transcribing",
@@ -222,6 +220,48 @@ def test_transcribe_asr_reports_model_and_chunk_progress(tmp_path, monkeypatch):
     assert events[-1][1] == 0.78  # hands the 0.8 alignment band back on time
     assert out["model"] == "adalat-ai/whisper-medium-hi-high-lr"
     assert out["lines"][0]["text"] == "la"
+
+
+def test_auto_language_is_detected_before_model_routing(tmp_path, monkeypatch):
+    """A1: with no hint, LID runs first so hi/ml get their fine-tunes (the old
+    flow routed 'auto' to the default model and the Indic models never ran)."""
+    import numpy as np
+
+    from pipeline import asr
+    from pipeline.config import LyricsConfig
+
+    monkeypatch.setattr(asr, "repo_cache_state", lambda repo: (True, 1.0))
+    monkeypatch.setattr(asr, "detect_language", lambda y, cfg: ("ml", 0.7))
+    seen = {}
+
+    def fake_hf(y, lang, model, cfg, on_progress=None):
+        seen["model"], seen["lang"] = model, lang
+        return [], [], lang
+
+    monkeypatch.setattr(asr, "_transcribe_hf", fake_hf)
+    out = asr.transcribe_asr(
+        tmp_path / "v.wav", language=None,
+        cfg=LyricsConfig(whisper_model="small", cache_dir=str(tmp_path)),
+        audio=np.zeros(16000, dtype=np.float32),
+    )
+    assert seen == {"model": "adalat-ai/whisper-medium-ml-rmft", "lang": "ml"}
+    assert out["language"] == "ml" and out["language_prob"] == 0.7
+
+
+def test_pick_language_biases_toward_candidates():
+    from pipeline.asr import pick_language
+
+    cands = ("hi", "ml", "en")
+    # Malayalam singing misread as Tamil → best candidate wins
+    probs = [("ta", 0.55), ("ml", 0.30), ("hi", 0.05)]
+    assert pick_language("ta", 0.55, probs, cands) == ("ml", 0.30)
+    # Whisper very sure about a non-candidate → keep it
+    probs = [("es", 0.95), ("en", 0.02)]
+    assert pick_language("es", 0.95, probs, cands) == ("es", 0.95)
+    # candidate detected → untouched
+    assert pick_language("hi", 0.6, [("hi", 0.6)], cands) == ("hi", 0.6)
+    # no candidates configured → raw Whisper answer
+    assert pick_language("ta", 0.5, probs, ()) == ("ta", 0.5)
 
 
 def test_job_timeout_covers_first_run_downloads(monkeypatch):
@@ -332,24 +372,55 @@ def test_roformer_checkpoint_resolution_offline():
 
 # ── Phase 4: alignment fallback + timebase ────────────────────────────────
 
-def test_alignment_fallback_timebase(tmp_path):
-    import soundfile as sf
+def test_alignment_timebase_with_synthetic_emissions(tmp_path, monkeypatch):
+    """Full align() path offline: LRCLIB-style timed line → per-word times
+    from the CTC path, on the stem's timebase (seconds from 0)."""
     import numpy as np
 
-    from pipeline.alignment import align
+    from pipeline import alignment
     from pipeline.config import LyricsConfig
 
-    sr = 16000
-    wav = tmp_path / "v.wav"
-    sf.write(str(wav), (0.1 * np.sin(2 * np.pi * 440 * np.arange(2 * sr) / sr)).astype("float32"), sr)
+    vocab = {"-": 0, "a": 1, "b": 2, "c": 3, "d": 4}
+    T = 100  # 2 s at 50 fps
+    lp = np.full((T, 5), np.log(0.025))
+    lp[:, 0] = np.log(0.9)
+    for f, c in [(20, 1), (25, 2), (50, 3), (55, 4)]:  # "ab" @0.4 s, "cd" @1.0 s
+        lp[f, :] = np.log(0.025)
+        lp[f, c] = np.log(0.9)
+    monkeypatch.setattr(alignment, "compute_emissions", lambda y, cfg: (lp, vocab))
+    monkeypatch.setattr(alignment, "_romanise",
+                        lambda w, l, v: {"ഹലോ": "ab", "ലോകം": "cd"}[w])
     lines = [{"timestamp": 0.2, "end": 1.8, "text": "ഹലോ ലോകം"}]
-    out = align(wav, lines=lines, language="ml",
-                cfg=LyricsConfig(alignment_enabled=True))
-    assert out["words"] and out["backend"] in ("even-split", "mms-ctc")
-    ts = [(w["timestamp"], w["end"]) for w in out["words"]]
-    assert ts[0][0] >= 0.0 and ts[-1][1] <= 2.0 + 1e-6  # chord timebase: s from 0
-    assert all(b[0] >= a[1] - 1e-6 or True for a, b in zip(ts, ts[1:]))
-    assert all(w["end"] - w["timestamp"] <= 4.0 for w in out["words"])  # ≤4 s sanity
+    out = alignment.align(tmp_path / "v.wav", lines=lines, language="ml",
+                          cfg=LyricsConfig(alignment_enabled=True),
+                          audio=np.zeros(2 * 16000, dtype=np.float32))
+    assert out["backend"] == "mms-fa"
+    w = out["words"]
+    assert [x["word"] for x in w] == ["ഹലോ", "ലോകം"]
+    assert (w[0]["timestamp"], w[1]["timestamp"]) == (0.4, 1.0)
+    assert w[0]["end"] <= w[1]["timestamp"] and w[1]["end"] <= 2.0
+    assert out["lines"][0]["timestamp"] == 0.4 and out["lines"][0]["w1"] == 1
+
+
+def test_alignment_untrusted_line_keeps_rough_timing(tmp_path, monkeypatch):
+    """Garbage evidence (uniform emissions) must not move words — the even
+    split / Whisper times survive instead of being scrambled."""
+    import numpy as np
+
+    from pipeline import alignment
+    from pipeline.config import LyricsConfig
+
+    vocab = {"-": 0, "a": 1, "b": 2, **{f"z{i}": i + 3 for i in range(25)}}  # 28 classes
+    monkeypatch.setattr(alignment, "compute_emissions",
+                        lambda y, cfg: (np.full((100, 28), np.log(1 / 28)), vocab))
+    monkeypatch.setattr(alignment, "_romanise", lambda w, l, v: "ab")
+    words = [{"word": "x", "timestamp": 0.3, "end": 0.6},
+             {"word": "y", "timestamp": 0.9, "end": 1.2}]
+    out = alignment.align(tmp_path / "v.wav", words=words, language="en",
+                          cfg=LyricsConfig(alignment_enabled=True),
+                          audio=np.zeros(2 * 16000, dtype=np.float32))
+    assert [(x["timestamp"], x["confidence"]) for x in out["words"]] == [
+        (0.3, None), (0.9, None)]
 
 
 # ── Phase 5 ───────────────────────────────────────────────────────────────
@@ -397,3 +468,105 @@ def test_transcribe_disabled_path(monkeypatch):
     out = lt.transcribe_lyrics("/nonexistent.wav", language="ml")
     assert out["lyrics"] == [] and "disabled" in out["error"]
     monkeypatch.delenv("ENABLE_LYRICS", raising=False)
+
+
+def test_metadata_uses_original_upload_filename(tmp_path):
+    """S2: uploads are stored as audio.<ext>; the original name must drive
+    the LRCLIB lookup (it used to search for the title 'audio')."""
+    from pipeline.lyrics_lookup import get_metadata
+
+    stored = tmp_path / "audio.mp3"
+    m = get_metadata(stored, filename="Chahun Main Ya Naa Aashiqui 2 320 Kbps.mp3")
+    assert m["title"] == "Chahun Main Ya Naa Aashiqui 2"
+    m = get_metadata(
+        stored,
+        filename="Mazha Njaan Arinjirunnilla  Dr. Patient  Hariharan  Bennet Veetraag.mp3",
+    )
+    assert m == {"title": "Mazha Njaan Arinjirunnilla"}  # no guessed artist
+    m = get_metadata(stored, filename="Arijit_Singh - Kesariya [Official Video].mp3")
+    assert m["artist"] == "Arijit Singh" and m["title"] == "Kesariya"
+    m = get_metadata(stored, filename="Elvis_Presly_-_I_Can_t_Help_Falling_In_Love_With_You_(mp3.pm).mp3")
+    assert m == {"artist": "Elvis Presly", "title": "I Can't Help Falling In Love With You"}
+    # no hint: the stored name "audio" is noise, so no bogus lookup happens
+    assert "title" not in get_metadata(stored)
+
+
+def test_tag_cleanup_and_artist_order_insensitive():
+    from pipeline.lyrics_lookup import _SITE_SUFFIX, _artist_ratio
+
+    assert _SITE_SUFFIX.sub("", "Chahun Main Ya Naa - PagalNew") == "Chahun Main Ya Naa"
+    assert _SITE_SUFFIX.sub("", "Hold On - Live") == "Hold On - Live"
+    assert _artist_ratio("Palak Muchhal, Arijit Singh", "Arijit Singh & Palak Muchhal") > 0.9
+    assert _artist_ratio("Arijit Singh", "Arijit Singh, Palak Muchhal") >= 0.9
+    assert _artist_ratio("Hariharan", "Shreya Ghoshal") < 0.5
+
+
+def test_voiced_windows_keep_sustained_singing():
+    """Energy gate on the stem (Silero VAD dropped held sung notes)."""
+    import numpy as np
+
+    from pipeline.asr import SR, voiced_windows
+
+    t = np.arange(int(40 * SR)) / SR
+    y = 0.001 * np.random.default_rng(0).standard_normal(len(t))  # bleed
+    sing = (t > 2) & (t < 14) | (t > 20) & (t < 21.5) | (t > 30) & (t < 31)
+    y = (y + 0.3 * np.sin(2 * np.pi * 220 * t) * sing).astype(np.float32)
+    w = voiced_windows(y, 30.0)
+    assert w[0][0] <= 2.0 and w[0][1] >= 14.0      # 12 s held note kept whole
+    assert any(s <= 20.0 and e >= 21.5 for s, e in w)
+    assert any(s <= 30.0 and e >= 31.0 for s, e in w)
+    assert all(e - s <= 30.0 for s, e in w)
+    assert sum(e - s for s, e in w) < 20.0          # silence/bleed excluded
+
+
+def test_failed_finetune_falls_back_to_stock_model(tmp_path, monkeypatch):
+    """A broken fine-tune never fails the job: same pipeline, stock model,
+    language pinned to what the first attempt detected."""
+    from pipeline import asr, lyrics_lookup
+    import lyrics_transcriber as lt
+
+    monkeypatch.setenv("LYRICS_SEPARATION_BACKEND", "none")
+    monkeypatch.setenv("LYRICS_ALIGNMENT", "0")
+    monkeypatch.setenv("LYRICS_LRCLIB", "0")
+    monkeypatch.setenv("WHISPER_MODEL", "small")
+    monkeypatch.setattr(lyrics_lookup, "get_metadata", lambda *a, **k: {})
+    calls = []
+
+    def fake_asr(path, language=None, cfg=None, progress=None, audio=None):
+        model = cfg.asr_model_for(language or "ml")
+        calls.append((language, model))
+        if model != "small":
+            return {"lyrics": [], "lines": [], "language": "ml", "error": "boom", "model": model}
+        return {"lyrics": [{"word": "x", "timestamp": 1.0, "end": 1.2}],
+                "lines": [{"timestamp": 1.0, "end": 1.2, "text": "x"}],
+                "language": "ml", "error": None, "model": model}
+
+    monkeypatch.setattr(asr, "transcribe_asr", fake_asr)
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"")
+    out = lt.transcribe_lyrics(str(wav))
+    assert calls[1] == ("ml", "small")
+    assert out["lyrics"] and "→small" in out["models"]["asr"]
+
+
+def test_routing_prefers_local_ct2_conversion(tmp_path, monkeypatch):
+    """A2: a converted fine-tune (scripts/convert_ct2.py) runs on batched
+    faster-whisper instead of the transformers pipeline."""
+    from pipeline.config import LyricsConfig, ct2_dir_for
+
+    monkeypatch.setenv("LYRICS_CT2_DIR", str(tmp_path))
+    cfg = LyricsConfig()
+    assert cfg.asr_model_for("hi") == "adalat-ai/whisper-medium-hi-high-lr"
+    d = ct2_dir_for("adalat-ai/whisper-medium-hi-high-lr")
+    d.mkdir(parents=True)
+    (d / "model.bin").write_bytes(b"x")
+    assert cfg.asr_model_for("hi") == str(d)
+    assert cfg.asr_model_for("en") == "small"
+
+
+def test_script_language_for_verified_lyrics():
+    from pipeline.lyrics_lookup import script_language
+
+    assert script_language("चाहूँ मैं या ना, तेरे बिना") == "hi"
+    assert script_language("മഴ ഞാൻ അറിഞ്ഞിരുന്നില്ല") == "ml"
+    assert script_language("Wise men say only fools rush in") is None

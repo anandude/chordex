@@ -25,6 +25,42 @@ export interface LyricLine {
   text: string;
 }
 
+// ── Chord sheet (built by the backend: backend/pipeline/sheet.py) ──────────
+// Chords are referenced by index into `chords`, so transpose / Easy Mode
+// relabel without moving anything.
+
+export interface SheetSeg {
+  chord: number | null;
+  text: string;
+}
+
+export interface SheetWord {
+  text: string;
+  t: number;
+  end: number;
+  segs: SheetSeg[];
+  roman?: string;
+}
+
+export type SheetRow =
+  | { kind: "section"; t: number; label: string }
+  | { kind: "bars"; t: number; end: number; chords: number[]; beats: number[] }
+  | {
+      kind: "line";
+      t: number;
+      end: number;
+      carry: number | null;
+      chorus: boolean;
+      words: SheetWord[];
+      gaps: { after_word: number; chords: number[] }[];
+    };
+
+export interface Sheet {
+  version: number;
+  beat: number;
+  rows: SheetRow[];
+}
+
 export interface EasyModeResult {
   capo: number;
   score: number;
@@ -48,10 +84,13 @@ export interface AnalysisResult {
   lyric_lines?: LyricLine[];
   lyric_lines_roman?: LyricLine[];
   lyrics_language?: string | null;
+  lyrics_language_prob?: number | null;
   lyrics_error?: string | null;
   lyrics_source?: "lrclib_synced" | "lrclib_plain" | "asr" | null;
   lyrics_cleaned?: boolean | null;
   easy?: EasyModeResult;
+  beats?: number[];
+  sheet?: Sheet;
 }
 
 export interface JobStatus {

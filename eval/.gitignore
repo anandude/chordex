@@ -12,3 +12,5 @@ cache/
 *.flac
 *.ogg
 *.m4a
+# Benchmark run outputs (contain transcripts)
+runs/

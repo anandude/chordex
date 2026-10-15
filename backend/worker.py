@@ -14,7 +14,7 @@ from typing import Any
 
 import redis
 from dotenv import load_dotenv
-from rq import Queue, Worker
+from rq import Queue, SimpleWorker, Worker
 
 import storage
 
@@ -114,6 +114,7 @@ def run_lyrics(
     title: str | None = None,
     artist: str | None = None,
     album: str | None = None,
+    filename: str | None = None,
 ) -> dict:
     """S3: slow lyrics-only job (separate → lookup/ASR → align → clean).
 
@@ -162,10 +163,13 @@ def run_lyrics(
             lyrics_out = transcribe_lyrics(
                 local_path, language=language, title=title, artist=artist,
                 album=album, duration=duration, progress=_on_stage,
+                filename=filename,
             )
             lyrics["lyrics"] = lyrics_out.get("lyrics", [])
             lyrics["lyric_lines"] = lyrics_out.get("lines", [])
             lyrics["lyrics_language"] = lyrics_out.get("language")
+            if lyrics_out.get("language_prob") is not None:
+                lyrics["lyrics_language_prob"] = round(lyrics_out["language_prob"], 3)
             lyrics["lyrics_source"] = lyrics_out.get("source", "asr")
             if lyrics_out.get("stages"):
                 lyrics["lyrics_stages"] = lyrics_out["stages"]
@@ -173,20 +177,6 @@ def run_lyrics(
                 lyrics["lyrics_models"] = lyrics_out["models"]
             if lyrics_out.get("cleaned"):
                 lyrics["lyrics_cleaned"] = True
-            # Phase 5b romanisation (display aid; canonical stays native-script)
-            try:
-                from pipeline.cleanup import romanise_lines
-
-                lyrics["lyric_lines_roman"] = [
-                    {"timestamp": l["timestamp"], "end": l.get("end"),
-                     "text": l.get("roman", l.get("text", ""))}
-                    for l in romanise_lines(
-                        lyrics_out.get("lines", []),
-                        lyrics_out.get("language") or language,
-                    )
-                ] if lyrics_out.get("lines") else []
-            except Exception:
-                lyrics["lyric_lines_roman"] = []
             if lyrics_out.get("error"):
                 lyrics["lyrics_error"] = lyrics_out["error"]
             lyrics["lyrics_status"] = "done"
@@ -229,8 +219,15 @@ if __name__ == "__main__":
     # demucs + whisper weights.)
     wanted = _sys.argv[1:] or ["chord_jobs", "lyrics_jobs"]
     queues = [Queue(name, connection=redis_conn) for name in wanted]
-    worker = Worker(queues, connection=redis_conn)
-    print(f"Worker started. Listening on queues: {', '.join(wanted)}")
+    # S4: a lyrics-only worker runs jobs in-process (SimpleWorker) so demucs,
+    # Whisper and the aligner stay loaded between songs — the default Worker
+    # forks a fresh work horse per job and every model cache died with it.
+    # RQ's job timeout still applies (SIGALRM in the main thread). Chord jobs
+    # keep the forking Worker: a stuck Vamp plugin must not take the worker
+    # down with it.
+    worker_cls = SimpleWorker if wanted == ["lyrics_jobs"] else Worker
+    worker = worker_cls(queues, connection=redis_conn)
+    print(f"{worker_cls.__name__} started. Listening on queues: {', '.join(wanted)}")
     print(f"UPLOAD_DIR={storage.UPLOAD_DIR}")
     print(f"CHORD_ENGINE={os.getenv('CHORD_ENGINE', 'auto')}")
     print(f"CHORD_SOURCE={os.getenv('CHORD_SOURCE', 'mix')}")
