@@ -1,11 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Ref, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { ChordEvent } from "@/lib/api";
 import { chordHex } from "@/lib/chordStyle";
 
+/** Lets other controls (the sticky mobile bar) drive playback. */
+export interface PlayerHandle {
+  toggle: () => void;
+}
+
 interface Props {
+  ref?: Ref<PlayerHandle>;
   src: string;
   chords: ChordEvent[];
   onTimeUpdate?: (time: number) => void;
@@ -21,6 +27,7 @@ function formatTime(seconds: number): string {
 }
 
 export default function AudioPlayer({
+  ref,
   src,
   chords,
   onTimeUpdate,
@@ -74,6 +81,25 @@ export default function AudioPlayer({
     if (audio.paused) audio.play().catch(() => setError("Playback failed"));
     else audio.pause();
   };
+
+  useImperativeHandle(ref, () => ({ toggle: togglePlay }));
+
+  // Space = play/pause anywhere on the page, unless the user is typing or a
+  // button has focus (Space already activates that button).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest("input, textarea, select, button, [contenteditable], [role=slider]")) return;
+      e.preventDefault();
+      const audio = audioRef.current;
+      if (!audio) return;
+      if (audio.paused) audio.play().catch(() => setError("Playback failed"));
+      else audio.pause();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // chord-tinted scrubber segments across the full track
   const segments = useMemo(() => {
@@ -234,7 +260,8 @@ export default function AudioPlayer({
           </div>
 
           <p className="mt-2 font-cl text-paper-dim/80 text-[11px] sm:text-xs">
-            coloured by chord — tap to jump
+            <span className="lg:hidden">coloured by chord — tap to jump</span>
+            <span className="hidden lg:inline">tap to jump · space plays</span>
           </p>
         </div>
       </div>

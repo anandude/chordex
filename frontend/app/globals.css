@@ -125,3 +125,9 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* Results sidebar: slim scrollbar that only shows when the panel overflows */
+.panel-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-soot, #2a2a2a) transparent;
+}
