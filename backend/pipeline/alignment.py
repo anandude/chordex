@@ -175,18 +175,20 @@ def _get_model(cfg: LyricsConfig):
     device = cfg.torch_device()
     bundle = torchaudio.pipelines.MMS_FA
     logger.info("loading MMS_FA aligner device=%s", device)
-    model = bundle.get_model(with_star=False).to(device)
-    if device.startswith("cuda"):
-        model = model.half()
-    model.eval()
+    # fp32 even on CUDA: on a GTX 1650 (Turing, no tensor cores) the fp16
+    # wav2vec2 forward measured 4.4x SLOWER (2.65 s vs 0.60 s per 19 s chunk).
+    model = bundle.get_model(with_star=False).to(device).eval()
     vocab = bundle.get_dict(star=None)
     _model_cache["mms_fa"] = (model, vocab, device, torch)
     return _model_cache["mms_fa"]
 
 
-def compute_emissions(y: np.ndarray, cfg: LyricsConfig, window_s: float = 30.0,
+def compute_emissions(y: np.ndarray, cfg: LyricsConfig, window_s: float = 15.0,
                       context_s: float = 2.0) -> tuple[np.ndarray, dict[str, int]]:
-    """(T, C) float32 log-probs at 50 fps for the whole stem."""
+    """(T, C) float32 log-probs at 50 fps for the whole stem.
+
+    15 s windows keep peak activation memory well under 1 GB, so the model
+    fits next to Whisper on a 4 GB card that also drives the desktop."""
     model, vocab, device, torch = _get_model(cfg)
     win, ctx = int(window_s * SR), int(context_s * SR)
     dtype = next(model.parameters()).dtype
