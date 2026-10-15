@@ -66,6 +66,11 @@ def whisper_device(preference: str) -> str:
 
 
 def whisper_compute_type(device: str, configured: str) -> str:
+    """int8_float16 on CUDA: on the GTX 1650 (no tensor cores) float16 was 3x
+    slower than int8_float16/float32 (11.6 s vs 3.8 s, Whisper small, 3-min
+    song, identical output), and int8 weights leave VRAM headroom for the
+    medium Indic models next to the aligner. Override with
+    WHISPER_COMPUTE_TYPE=float16 on tensor-core GPUs."""
     if configured:
         return configured
-    return "float16" if device == "cuda" else "int8"
+    return "int8_float16" if device == "cuda" else "int8"
