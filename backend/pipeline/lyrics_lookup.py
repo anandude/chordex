@@ -350,6 +350,22 @@ def _plain_lines_even(plain: str, duration: float | None) -> list[dict[str, Any]
     return spread_lines(texts, duration)
 
 
+def script_language(text: str) -> str | None:
+    """Language from the dominant script of verified lyrics (LRCLIB has no
+    language field). Only the scripts we serve; Latin → None (ambiguous)."""
+    counts = {"hi": 0, "ml": 0, "ta": 0}
+    for ch in text:
+        o = ord(ch)
+        if 0x0900 <= o <= 0x097F:
+            counts["hi"] += 1
+        elif 0x0D00 <= o <= 0x0D7F:
+            counts["ml"] += 1
+        elif 0x0B80 <= o <= 0x0BFF:
+            counts["ta"] += 1
+    lang, n = max(counts.items(), key=lambda kv: kv[1])
+    return lang if n >= 10 else None
+
+
 # ── entry point ───────────────────────────────────────────────────────────
 
 def lookup_lyrics(
@@ -428,7 +444,7 @@ def lookup_lyrics(
         "source": "lrclib_synced" if synced else "lrclib_plain",
         "lines": lines,
         "lyrics": words_even_split(lines),
-        "language": None,
+        "language": script_language(" ".join(l["text"] for l in lines)),
         "track": {
             "trackName": candidate.get("trackName"),
             "artistName": candidate.get("artistName"),

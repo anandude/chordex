@@ -562,3 +562,11 @@ def test_routing_prefers_local_ct2_conversion(tmp_path, monkeypatch):
     (d / "model.bin").write_bytes(b"x")
     assert cfg.asr_model_for("hi") == str(d)
     assert cfg.asr_model_for("en") == "small"
+
+
+def test_script_language_for_verified_lyrics():
+    from pipeline.lyrics_lookup import script_language
+
+    assert script_language("चाहूँ मैं या ना, तेरे बिना") == "hi"
+    assert script_language("മഴ ഞാൻ അറിഞ്ഞിരുന്നില്ല") == "ml"
+    assert script_language("Wise men say only fools rush in") is None

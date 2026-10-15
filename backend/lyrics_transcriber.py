@@ -158,7 +158,11 @@ def transcribe_lyrics(
             source = hit["source"]
             lookup_lines = hit["lines"]
             lookup_text = "\n".join(l["text"] for l in lookup_lines)
-            lang_hint = hit.get("language") or lang_hint
+            from pipeline.lyrics_lookup import script_language
+
+            # cached hits pre-date the language field → infer from the script
+            lang_hint = (hit.get("language") or lang_hint
+                         or script_language(lookup_text or ""))
     except Exception as exc:
         logger.warning("lyrics lookup failed (%s) — ASR fallback", exc)
     stages["lookup"] = round(_time.time() - t0, 2)
