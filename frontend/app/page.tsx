@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { Music } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { analyzeUrl, isYouTubeUrl, uploadAudio } from "@/lib/api";
@@ -104,7 +105,7 @@ export default function Home() {
         <div className="mb-10 flex flex-col items-center">
           <Image
             src="/logo.webp"
-            alt="ChordLens"
+            alt="Chordex"
             width={340}
             height={227}
             priority
@@ -171,12 +172,10 @@ export default function Home() {
             </div>
           ) : (
             <>
-              <Image
-                src="/icons/note.svg"
-                alt=""
-                width={56}
-                height={56}
-                className="mx-auto mb-5 w-12 h-12"
+              <Music
+                aria-hidden
+                strokeWidth={2.5}
+                className="mx-auto mb-5 w-12 h-12 p-2 bg-tomato text-ink border-2 border-black shadow-hard-sm"
               />
               <p className="text-ink font-bold text-xl sm:text-2xl mb-2 tracking-tight">
                 {isDragging ? "Drop it!" : "Drop your audio file here"}

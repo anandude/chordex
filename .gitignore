@@ -46,3 +46,22 @@ backend/models/*.ckpt
 /assets/
 /public/
 backend/models/ct2/
+
+# Audio is never committed (copyright). Put your own songs here locally.
+test-assets/songs/*
+!test-assets/songs/README.md
+eval/songs/*
+!eval/songs/.gitkeep
+*.mp3
+*.m4a
+*.flac
+
+# Licensed design assets must never be committed (fonts, icon packs,
+# textures bought for personal use); the app uses open-licensed fonts/icons.
+*.otf
+*.ttf
+*.woff
+*.woff2
+
+# Local notes / reports
+moises-rea-report.md

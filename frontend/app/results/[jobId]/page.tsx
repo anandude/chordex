@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useEffect, useMemo, useRef, useState } from "react";
+import { Copy, Upload } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import Image from "next/image";
@@ -253,18 +254,12 @@ export default function ResultsPage({
             href="/"
             className="inline-flex items-center gap-2.5 min-h-11 bg-coal border-2 border-black shadow-hard-sm px-3.5 py-2 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
           >
-            <Image
-              src="/icons/upload.svg"
-              alt=""
-              width={20}
-              height={20}
-              className="w-5 h-5"
-            />
+            <Upload aria-hidden strokeWidth={2.5} className="w-5 h-5 text-mint" />
             new song
           </Link>
           <Image
             src="/logo.webp"
-            alt="ChordLens"
+            alt="Chordex"
             width={140}
             height={93}
             className="w-28 sm:w-36 h-auto"
@@ -406,7 +401,7 @@ export default function ResultsPage({
                   href="/"
                   className="inline-flex items-center gap-2 min-h-10 bg-coal border-2 border-black shadow-hard-sm px-3 py-1.5 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
                 >
-                  <Image src="/icons/upload.svg" alt="" width={18} height={18} className="w-4.5 h-4.5" />
+                  <Upload aria-hidden strokeWidth={2.5} className="w-4 h-4 text-mint" />
                   new song
                 </Link>
                 <Image src="/logo.webp" alt="Chordex" width={140} height={93} className="w-24 h-auto" />
@@ -560,7 +555,7 @@ export default function ResultsPage({
                   title="Copy as ChordPro text (chords inline on their syllables)"
                   className="min-h-10 inline-flex items-center justify-center gap-2 font-pixel text-xs sm:text-sm px-4 py-2 bg-paper text-ink border-2 border-black shadow-hard-sm hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-transform"
                 >
-                  <Image src="/icons/copy.svg" alt="" width={16} height={16} className="w-4 h-4" />
+                  <Copy aria-hidden strokeWidth={2.5} className="w-4 h-4" />
                   {copied ? "COPIED!" : "COPY SHEET"}
                 </button>
               </div>

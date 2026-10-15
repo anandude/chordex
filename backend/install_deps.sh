@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reliable install for ChordLens backend (handles vamp/chord-extractor quirks).
+# Reliable install for Chordex backend (handles vamp/chord-extractor quirks).
 set -euo pipefail
 cd "$(dirname "$0")"
 

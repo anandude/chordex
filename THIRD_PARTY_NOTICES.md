@@ -1,7 +1,16 @@
-# License notes — lyrics pipeline models & data
+# Third-party notices
+
+Chordex's own source code is MIT-licensed (see [LICENSE](LICENSE)). It
+depends on, and at runtime downloads, third-party code, model weights and data
+under **their own** licenses, listed below. Some are **not** permissive. Most
+importantly, the MMS alignment weights are **non-commercial**, and
+`aksharamukha` is **AGPL-3.0**. Check this table before using Chordex
+commercially or offering it as a hosted service.
 
 Every weight/API below was verified against its actual source (model card,
 PyPI, live API) before wiring. Verify again before changing pins.
+
+## Models, data and Python packages
 
 | Component | Artifact | License | Commercial? |
 |---|---|---|---|
@@ -19,7 +28,10 @@ PyPI, live API) before wiring. Verify again before changing pins.
 | MMS forced-alignment weights (`torchaudio.pipelines.MMS_FA`, Meta MMS) | weights | **CC-BY-NC-4.0 (non-commercial)** | ❌ **BLOCKER for commercial use** — `pipeline/alignment.py::ALIGN_FN` is swappable; investigate an Apache/MIT alternative before this becomes load-bearing |
 | `uroman` (romaniser for the aligner) | code | MIT-style permission text in package metadata (classifier says Apache) — permissive either way | ✅ |
 | `nvidia-cublas-cu12` (CUDA 12 cuBLAS for CTranslate2) | binary | NVIDIA proprietary redistributable (CUDA EULA) | ✅ personal use |
-| IndicXlit (`ai4bharat-transliteration==1.1.3`) | code + 11M-param model | MIT | ⚠️ wired but unrunnable here (needs fairseq/broken on py3.11); default roman backend is `indic-transliteration==2.3.82` (MIT, pure Python) |
+| IndicXlit (`ai4bharat-transliteration==1.1.3`) | code + 11M-param model | MIT | ⚠️ optional `xlit` roman backend; unrunnable on py3.11 (needs fairseq) |
+| `aksharamukha==2.3` (default `readable` romaniser for English-letter lyrics) | code | **AGPL-3.0** | ⚠️ copyleft. If you distribute Chordex, or run a modified version as a network service, the AGPL terms apply to the combined work. Use `LYRICS_ROMAN_BACKEND=indic` (MIT) to avoid it |
+| `indic-transliteration==2.3.82` (`indic` roman backend) | code | MIT | ✅ |
+| `yt-dlp` (YouTube links) | code | Unlicense (public domain) | ✅ code. Downloading from YouTube is subject to YouTube's Terms of Service, which is your responsibility |
 | LRCLIB (`https://lrclib.net`) | API + user-contributed lyrics | free, no key; contents user-contributed, **not licensed** | ⚠️ personal use ok; get clarity before scaling |
 
 **Copyright note (not a coding task):** song lyrics are copyrighted. LRCLIB
@@ -27,7 +39,22 @@ contents are user contributions, not licensed masters. Fine for personal use;
 get legal clarity before scaling beyond it. Training data (Phase 6) must be
 reproducible from links, never redistributed as audio.
 
-**Project status (owner-confirmed 2026-09-13): personal use only.** The MMS
-CC-BY-NC aligner weights are therefore acceptable as-is. If this ever moves
-toward commercial use, revisit the alignment backend FIRST (swappable via
-`pipeline/alignment.py::ALIGN_FN`) and re-clear LRCLIB-sourced lyrics.
+## Frontend
+
+| Component | License |
+|---|---|
+| Next.js, React, TanStack Query, Tailwind CSS | MIT |
+| `lucide-react` icons | ISC |
+| Jersey 10, Space Mono, Geist, Noto Sans Devanagari/Malayalam (Google Fonts, loaded via `next/font`) | SIL Open Font License 1.1 |
+
+The repository ships **no** font files, icon packs or stock textures. Don't
+commit licensed design assets; the `.gitignore` blocks font files.
+
+## Commercial use
+
+The project was built for personal use, so the CC-BY-NC MMS aligner weights
+are the default. Before any commercial use:
+1. Swap the alignment backend (`pipeline/alignment.py::ALIGN_FN`) for an
+   Apache/MIT-licensed aligner, or run with `LYRICS_ALIGNMENT=0`.
+2. Re-clear LRCLIB-sourced lyrics (song lyrics are copyrighted).
+3. Review the Indic-Transcribe license conditions and the aksharamukha AGPL.

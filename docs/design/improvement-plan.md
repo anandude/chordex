@@ -226,7 +226,7 @@ Each change states the files affected, dependencies, risks, and verification. "e
   - Keep a **native ↔ roman word index map** instead of truncating (B12).
   - Emit per-word `confidence` and per-word `chars: [{t}]` onset times. These give the "syllable-level" capability: they let a chord land mid-word.
   - Low-confidence words fall back to the Whisper times.
-  - Remove `ctc-forced-aligner==1.0.2` from `requirements.txt` and fix the `LICENSE-NOTES.md` entry.
+  - Remove `ctc-forced-aligner==1.0.2` from `requirements.txt` and fix the `THIRD_PARTY_NOTICES.md` entry.
 - **Deps**: torchaudio (installed). MMS_FA weights are about 1.2 GB, **CC-BY-NC-4.0**, which LICENSE-NOTES already accepts for personal use. `forced_align` is flagged for deprecation in recent torchaudio, so we pin the current version and include a small in-house NumPy CTC Viterbi fallback (≈60 lines, unit-tested) so a future torchaudio removal doesn't break us.
 - **GPU**: about 1.3 GB fp16; works on CPU at roughly 0.2× realtime.
 - **Verify**: word-onset MAE on hand-labelled words (target under 100 ms) and the share of low-confidence words. A test on a synthetic TTS/fixture clip checks monotonic, in-window timestamps.

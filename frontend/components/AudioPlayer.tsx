@@ -1,7 +1,7 @@
 "use client";
 
 import { Ref, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import Image from "next/image";
+import { Pause, Play } from "lucide-react";
 import { ChordEvent } from "@/lib/api";
 import { chordHex } from "@/lib/chordStyle";
 
@@ -72,7 +72,7 @@ export default function AudioPlayer({
     if (seekTo == null || !audioRef.current) return;
     audioRef.current.currentTime = seekTo;
     timeCbRef.current?.(seekTo);
-    setCurrentTime(seekTo);
+    // the local scrubber catches up in onSeeked (a few ms later)
   }, [seekTo]);
 
   const togglePlay = () => {
@@ -179,13 +179,11 @@ export default function AudioPlayer({
           aria-label={isPlaying ? "Pause" : "Play"}
           className="shrink-0 w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-lime border-2 border-black shadow-hard flex items-center justify-center transition-transform hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-[3px] active:translate-y-[3px] active:shadow-none"
         >
-          <Image
-            src={isPlaying ? "/icons/pause.svg" : "/icons/play.svg"}
-            alt=""
-            width={30}
-            height={30}
-            className="w-7 h-7 sm:w-8 sm:h-8"
-          />
+          {isPlaying ? (
+            <Pause aria-hidden fill="currentColor" className="w-7 h-7 sm:w-8 sm:h-8 text-ink" />
+          ) : (
+            <Play aria-hidden fill="currentColor" className="w-7 h-7 sm:w-8 sm:h-8 text-ink translate-x-0.5" />
+          )}
         </button>
 
         <div className="flex-1 min-w-0">

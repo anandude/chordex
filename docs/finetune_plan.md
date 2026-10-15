@@ -38,4 +38,4 @@ aggregate pool.
 
 Commercial song audio cannot be redistributed: ship `collect_pairs.py` +
 song-link lists, never waveforms. Model release inherits Whisper Apache-2.0
-lineage + training-data constraints — record in LICENSE-NOTES.md.
+lineage + training-data constraints — record in THIRD_PARTY_NOTICES.md.

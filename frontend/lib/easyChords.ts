@@ -69,16 +69,6 @@ const STRIP_RULES: Array<[string, string]> = [
   ["m", "m"],
 ];
 
-function normalizeRoot(raw: string): string | null {
-  if (!raw) return null;
-  if (raw.length >= 2 && (raw[1] === "#" || raw[1] === "b")) {
-    const root = FLAT_TO_SHARP[raw.slice(0, 2)] ?? raw.slice(0, 2);
-    return NOTES.includes(root) ? root : null;
-  }
-  const root = raw[0].toUpperCase();
-  return NOTES.includes(root) ? root : null;
-}
-
 function parseChord(chord: string): [string, string] {
   if (chord === "N") return ["N", ""];
   let body = chord;

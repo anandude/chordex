@@ -1,0 +1,51 @@
+name: Bug report
+description: Something broke, or the chords/lyrics came out wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please don't attach copyrighted audio. A song name or YouTube link is enough.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: input
+    id: song
+    attributes:
+      label: Song (name or YouTube link)
+      placeholder: "Tum Hi Ho — Arijit Singh / https://youtu.be/..."
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chords
+        - Lyrics (wrong words)
+        - Chord placement (chord over the wrong word)
+        - English-letter lyrics (spelling)
+        - YouTube links
+        - Player / UI
+        - Setup / install
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: language
+    attributes:
+      label: Song language
+      placeholder: Hindi / Malayalam / English / ...
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, GPU (or CPU-only), browser, and the commit you're on (`git rev-parse --short HEAD`).
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from `.run/logs/*.log` (worker-lyrics.log for lyrics problems).
+      render: shell

@@ -1,7 +1,7 @@
 """
 main.py
 -------
-FastAPI application — ChordLens backend API.
+FastAPI application — Chordex backend API.
 
 Endpoints:
     POST /api/analyze            Upload audio → enqueue job → return {job_id}
@@ -36,7 +36,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ── App setup ─────────────────────────────────────────────────────────────────
-app = FastAPI(title="ChordLens API", version="2.0.0")
+app = FastAPI(title="Chordex API", version="2.0.0")
 
 _allowed_origins = [
     o.strip()

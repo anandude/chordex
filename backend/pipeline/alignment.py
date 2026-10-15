@@ -29,7 +29,7 @@ How it works:
 Timebase: seconds from 0 of the stem, which shares the upload's origin.
 
 ⚠️ LICENSING: MMS_FA weights are CC-BY-NC-4.0 (non-commercial). The project is
-personal-use only (LICENSE-NOTES.md). The backend is swappable via ``ALIGN_FN``.
+personal-use only (THIRD_PARTY_NOTICES.md). The backend is swappable via ``ALIGN_FN``.
 """
 
 from __future__ import annotations
