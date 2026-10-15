@@ -12,6 +12,7 @@ Endpoints:
 """
 
 import json
+import logging
 import os
 import tempfile
 import uuid
@@ -32,6 +33,7 @@ from rq.job import Job
 import storage
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 app = FastAPI(title="ChordLens API", version="2.0.0")
@@ -176,6 +178,7 @@ async def analyze_url(req: AnalyzeUrlRequest):
         try:
             path, hints = await run_in_threadpool(youtube.fetch_audio, req.url, Path(tmp))
         except youtube.YouTubeError as exc:
+            logger.warning("analyze-url %s failed: %s", req.url, exc)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         contents = path.read_bytes()
         ext = path.suffix.lstrip(".").lower()
@@ -314,20 +317,24 @@ def _lyrics_state(job_id: str) -> tuple[str, str | None]:
 
 
 def _romanise_sheet(sheet: dict, lang: str | None) -> None:
-    """Word-level romanisation (hi/ml) so the Roman view keeps every chord on
-    its word — line-level roman text could not carry anchors."""
-    if lang not in ("hi", "ml"):
-        return
+    """Word-level everyday romanisation (pipeline/romanise.py) for any Indic
+    script, so the Roman view keeps every chord on its syllable: ``roman`` is
+    the whole word, ``roman_segs`` its split across the sheet segments.
+    Script-detected per word, so a mis-detected language doesn't matter."""
     try:
-        from pipeline.cleanup import romanise_lines
+        from pipeline.romanise import romanise, romanise_segments, script_of
 
-        words = [w for r in sheet["rows"] if r.get("kind") == "line" for w in r["words"]]
-        romans = romanise_lines([{"text": w["text"]} for w in words], lang)
-        for w, r in zip(words, romans):
-            if r.get("roman") and r["roman"] != w["text"]:
-                w["roman"] = r["roman"]
-    except Exception:
-        pass
+        for row in sheet["rows"]:
+            if row.get("kind") != "line":
+                continue
+            for w in row["words"]:
+                if script_of(w["text"]) is None:
+                    continue
+                w["roman"] = romanise(w["text"])
+                if len(w["segs"]) > 1:
+                    w["roman_segs"] = romanise_segments([s["text"] for s in w["segs"]])
+    except Exception as exc:  # ImportError (no aksharamukha) → native only
+        logger.warning("romanisation unavailable (%s)", exc)
 
 
 def _attach_sheet(job_id: str, result: dict) -> None:

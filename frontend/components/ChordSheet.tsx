@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
-import { ChordEvent, Sheet, SheetRow, SheetWord } from "@/lib/api";
+import { ChordEvent, Sheet, SheetRow } from "@/lib/api";
 import {
   activeRowIndex,
   activeWordIndex,
   chordsOnlySheet,
   redundantChords,
+  romanSegments,
 } from "@/lib/chordSheet";
 import { chordChipClass } from "@/lib/chordStyle";
 
@@ -62,19 +63,6 @@ function ChordChip({
       {chord}
     </button>
   );
-}
-
-/** Split romanised text proportionally to the native segments. */
-function romanSegments(word: SheetWord): string[] {
-  const roman = word.roman ?? word.text;
-  const total = word.segs.reduce((n, s) => n + s.text.length, 0) || 1;
-  let acc = 0;
-  return word.segs.map((s) => {
-    const a = Math.round((acc / total) * roman.length);
-    acc += s.text.length;
-    const b = Math.round((acc / total) * roman.length);
-    return roman.slice(a, b);
-  });
 }
 
 export default function ChordSheet({
@@ -145,7 +133,7 @@ export default function ChordSheet({
       .forEach((g, gi) => units.push(gapUnit(`lead${gi}`, g.chords)));
 
     row.words.forEach((w, k) => {
-      const romans = script === "roman" ? romanSegments(w) : null;
+      const romans = script === "roman" && w.roman ? romanSegments(w) : null;
       const wordActive = isActive && activeWord === k;
       units.push(
         // one word = one unbreakable unit; wrapping happens only between words
