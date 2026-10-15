@@ -27,6 +27,8 @@ const PROCESSING_LINES = [
 // Stage ids published by the worker (progress:{job_id}) → readable labels. The
 // model stages matter: a first run in a new language downloads ~1 GB, which
 // used to look like a hang.
+type Script = "native" | "roman" | "both";
+
 const STAGE_LABELS: Record<string, string> = {
   chords: "detecting chords",
   fetching_lyrics: "looking for existing lyrics",
@@ -104,7 +106,26 @@ export default function ResultsPage({
   const [seekTo, setSeekTo] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [statusLine, setStatusLine] = useState(0);
-  const [script, setScript] = useState<"native" | "roman" | "both">("native");
+  // Indic lyrics default to English letters (most readers read Hinglish /
+  // Manglish faster than an unfamiliar script); the choice is remembered.
+  // Safe as a lazy initialiser: the sheet only renders after the client fetch.
+  const [script, setScriptState] = useState<Script>(() => {
+    try {
+      const saved = window.localStorage.getItem("chordex.script");
+      if (saved === "native" || saved === "roman" || saved === "both") return saved;
+    } catch {
+      /* storage blocked */
+    }
+    return "roman";
+  });
+  const setScript = (s: Script) => {
+    setScriptState(s);
+    try {
+      window.localStorage.setItem("chordex.script", s);
+    } catch {
+      /* storage blocked */
+    }
+  };
 
   const { data, error, refetch } = useQuery({
     queryKey: ["job", jobId],
@@ -193,7 +214,7 @@ export default function ResultsPage({
       : [];
     const full =
       sheet && hasLines
-        ? sheetToChordPro(sheet, displayChords.map((c) => c.chord), header)
+        ? sheetToChordPro(sheet, displayChords.map((c) => c.chord), header, script === "roman")
         : formatProgression(displayChords, { easy: easyMode, capo: easy?.capo });
     try {
       await navigator.clipboard.writeText(full);
@@ -502,7 +523,7 @@ export default function ResultsPage({
             ) && (
                 <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
                   <span className="font-cl text-paper-dim text-xs uppercase tracking-[0.2em]">
-                    Script
+                    Lyrics in
                   </span>
                   <div
                     role="group"
@@ -521,11 +542,7 @@ export default function ResultsPage({
                             : "bg-coal text-paper-dim hover:text-paper"
                         }`}
                       >
-                        {s === "native"
-                          ? "മലയാളം / हिंदी"
-                          : s === "roman"
-                            ? "ROMAN"
-                            : "BOTH"}
+                        {s === "native" ? "ORIGINAL" : s === "roman" ? "ENGLISH" : "BOTH"}
                       </button>
                     ))}
                   </div>

@@ -2,7 +2,7 @@
 // sits on) is built and tested in the backend — backend/pipeline/sheet.py —
 // so this file only answers "what is playing now" and exports text.
 
-import { ChordEvent, Sheet, SheetRow } from "./api";
+import { ChordEvent, Sheet, SheetRow, SheetWord } from "./api";
 
 export function activeChordIndex(
   chords: Array<{ timestamp: number; end?: number }>,
@@ -89,11 +89,28 @@ export function redundantChords(sheet: Sheet, labels: string[]): Set<number> {
   return hidden;
 }
 
-/** ChordPro text (`[G]Wise men [D]say`) for copy/export. */
+/** Romanised text per segment: the backend's syllable-accurate split when
+ *  present, else a proportional split of the whole-word romanisation. */
+export function romanSegments(word: SheetWord): string[] {
+  if (word.roman_segs?.length === word.segs.length) return word.roman_segs;
+  const roman = word.roman ?? word.segs.map((s) => s.text).join("");
+  const total = word.segs.reduce((n, s) => n + s.text.length, 0) || 1;
+  let acc = 0;
+  return word.segs.map((s) => {
+    const a = Math.round((acc / total) * roman.length);
+    acc += s.text.length;
+    const b = Math.round((acc / total) * roman.length);
+    return roman.slice(a, b);
+  });
+}
+
+/** ChordPro text (`[G]Wise men [D]say`) for copy/export. `roman` exports the
+ *  English-letter lyrics with chords on the same syllables. */
 export function sheetToChordPro(
   sheet: Sheet,
   labels: string[],
-  header: string[] = []
+  header: string[] = [],
+  roman = false
 ): string {
   const hidden = redundantChords(sheet, labels);
   const tag = (c: number) => (hidden.has(c) ? "" : `[${labels[c]}]`);
@@ -115,8 +132,9 @@ export function sheetToChordPro(
           .flatMap((g) => g.chords.map(tag))
           .join("");
       const words = r.words.map((w, k) => {
+        const texts = roman && w.roman ? romanSegments(w) : w.segs.map((s) => s.text);
         const body = w.segs
-          .map((s) => (s.chord !== null ? tag(s.chord) : "") + s.text)
+          .map((s, i) => (s.chord !== null ? tag(s.chord) : "") + texts[i])
           .join("");
         const gap = gapsAt(k);
         return gap ? `${body} ${gap}` : body;

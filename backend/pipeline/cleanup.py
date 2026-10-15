@@ -130,17 +130,24 @@ def _get_xlit():
 def _roman_backend() -> str:
     import os
 
-    return os.getenv("LYRICS_ROMAN_BACKEND", "indic").strip().lower()
+    # readable (default): pipeline/romanise.py everyday spelling.
+    # indic: sanscript Harvard-Kyoto (tU hI). xlit: AI4Bharat IndicXlit.
+    return os.getenv("LYRICS_ROMAN_BACKEND", "readable").strip().lower()
 
 
 def romanise_line(text: str, lang_code: str) -> str:
-    """Native-script line → Roman. ``indic`` backend (sanscript HK) by default;
-    ``xlit`` backend when configured and runnable. Cached per line."""
+    """Native-script line → Roman. ``readable`` (everyday spelling) by
+    default; ``indic`` (sanscript HK) and ``xlit`` when configured. The other
+    backends are disk-cached per line; readable is fast and lru-cached."""
     from pipeline.cache import cache_path
 
     from pipeline.config import LyricsConfig as _C
 
     backend = _roman_backend()
+    if backend == "readable":
+        from pipeline.romanise import romanise
+
+        return romanise(text)
     key = cache_path(_C.from_env().cache_dir, "roman", backend, lang_code, text,
                      ext=".txt")
     try:
@@ -166,14 +173,23 @@ def romanise_line(text: str, lang_code: str) -> str:
     return out
 
 
+_ROMAN_LANGS = {"hi", "mr", "ml", "ta", "te", "kn", "bn", "gu", "pa", "or"}
+
+
 def romanise_lines(
     lines: list[dict[str, Any]], lang_code: str | None
 ) -> list[dict[str, Any]]:
     """Attach ``roman`` to each line; falls back to native text when the
     engine/lang is unavailable. Storage stays native-script."""
-    if not lines or not lang_code or lang_code not in ("hi", "ml"):
+    if not lines or not lang_code or lang_code not in _ROMAN_LANGS:
         return lines
-    if _roman_backend() == "xlit":
+    if _roman_backend() == "readable":
+        try:
+            import aksharamukha  # noqa: F401
+        except ImportError:
+            logger.info("aksharamukha not installed — romanisation off")
+            return lines
+    elif _roman_backend() == "xlit":
         try:
             _get_xlit()
         except ImportError:
