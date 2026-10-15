@@ -16,6 +16,14 @@
       "ref_lyrics": "eval/refs/ml_mazha.txt",
       "ref_chordpro": "eval/refs/ml_mazha.cho",
       "ref_onsets": "eval/refs/ml_mazha.onsets.txt"
+    },
+    {
+      "id": "en_elvis",
+      "audio": "test-assets/songs/Elvis_Presly_-_I_Can_t_Help_Falling_In_Love_With_You_(mp3.pm).mp3",
+      "language": "en",
+      "ref_lyrics": "eval/refs/en_elvis.txt",
+      "ref_chordpro": "eval/refs/en_elvis.cho",
+      "ref_onsets": "eval/refs/en_elvis.onsets.txt"
     }
   ]
 }
