@@ -251,6 +251,40 @@ def _lyrics_state(job_id: str) -> tuple[str, str | None]:
     return "pending", None
 
 
+def _attach_sheet(job_id: str, result: dict) -> None:
+    """L2: merge chords + lyric timing into the chord sheet (pipeline/sheet).
+
+    Pure and cheap, so it runs at read time — no race between the chord and
+    lyrics jobs. Cached once lyrics are final; while they are pending the
+    sheet is chords-only and rebuilt on the next poll.
+    """
+    final = result.get("lyrics_status") in ("done", "failed", "disabled")
+    if final:
+        cached = _redis_kv.get(f"sheet:{job_id}")
+        if cached:
+            result["sheet"] = json.loads(cached)
+            return
+    try:
+        from pipeline.sheet import build_sheet
+
+        sheet = build_sheet(
+            result.get("chords") or [],
+            result.get("lyrics") or [],
+            result.get("lyric_lines") or [],
+            beats=result.get("beats"),
+            tempo=result.get("tempo"),
+        )
+    except Exception as exc:  # never break status polling over the sheet
+        result["sheet_error"] = str(exc)[:300]
+        return
+    result["sheet"] = sheet
+    if final:
+        try:
+            _redis_kv.setex(f"sheet:{job_id}", _RESULT_TTL, json.dumps(sheet))
+        except Exception:
+            pass
+
+
 @app.get("/api/status/{job_id}", response_model=StatusResponse)
 async def get_status(job_id: str):
     """Poll the status of a chord-analysis job.
@@ -272,6 +306,7 @@ async def get_status(job_id: str):
             result["lyrics_status"] = state
             if state == "failed" and error and not result.get("lyrics_error"):
                 result["lyrics_error"] = error
+        _attach_sheet(job_id, result)
         resp = StatusResponse(status="done", result=result)
         if result.get("lyrics_status") in ("pending", "processing"):
             qn, qp, qd = _queue_info(f"{job_id}:lyrics", _lyrics_queue)
@@ -333,7 +368,8 @@ async def cancel_job(job_id: str):
             pass
     try:
         pipe = _redis_kv.pipeline()
-        pipe.delete(f"result:{job_id}", f"lyrics:{job_id}", f"progress:{job_id}")
+        pipe.delete(f"result:{job_id}", f"lyrics:{job_id}", f"progress:{job_id}",
+                    f"sheet:{job_id}")
         pipe.setex(f"cancelled:{job_id}", _RESULT_TTL, "1")
         pipe.execute()
     except Exception as exc:
