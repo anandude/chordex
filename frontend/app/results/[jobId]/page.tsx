@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import Image from "next/image";
@@ -8,7 +8,7 @@ import { audioUrl, cancelJob, getJobStatus } from "@/lib/api";
 import { transposeKeyLabel, transposeProgression } from "@/lib/transpose";
 import { applyEasyMode } from "@/lib/easyChords";
 import { activeChordIndex, sheetToChordPro } from "@/lib/chordSheet";
-import AudioPlayer from "@/components/AudioPlayer";
+import AudioPlayer, { PlayerHandle } from "@/components/AudioPlayer";
 import NowNextBar from "@/components/NowNextBar";
 import ChordSheet from "@/components/ChordSheet";
 import TransposeControl from "@/components/TransposeControl";
@@ -73,24 +73,13 @@ function formatProgression(
   return header.length ? `${header.join("\n")}\n\n${body}` : body;
 }
 
-function StatChip({
-  icon,
-  label,
-  value,
-}: {
-  icon: string;
-  label: string;
-  value: string;
-}) {
-  return (
-    <span className="inline-flex items-center gap-2.5 bg-coal border-2 border-black shadow-hard-sm px-3 py-2">
-      <Image src={icon} alt="" width={20} height={20} className="w-5 h-5" />
-      <span className="font-cl text-paper-dim text-xs uppercase tracking-wider">
-        {label}
-      </span>
-      <span className="font-pixel text-paper text-base">{value}</span>
-    </span>
-  );
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: "English", hi: "Hindi", ml: "Malayalam", ta: "Tamil", te: "Telugu",
+  kn: "Kannada", bn: "Bengali", mr: "Marathi", gu: "Gujarati", pa: "Punjabi",
+};
+
+function languageName(code: string): string {
+  return LANGUAGE_NAMES[code] ?? code;
 }
 
 export default function ResultsPage({
@@ -99,6 +88,7 @@ export default function ResultsPage({
   params: Promise<{ jobId: string }>;
 }) {
   const { jobId } = use(params);
+  const playerRef = useRef<PlayerHandle>(null);
   const [semitones, setSemitones] = useState(0);
   const [easyMode, setEasyMode] = useState(false);
   const [playhead, setPlayhead] = useState(0);
@@ -238,11 +228,27 @@ export default function ResultsPage({
           .padStart(2, "0")}`
       : "?";
 
+  const showResults = data?.status === "done" && Boolean(result);
+  const hasRoman = Boolean(
+    result?.sheet?.rows.some((r) => r.kind === "line" && r.words.some((w) => w.roman))
+  );
+  const togglePlay = () => playerRef.current?.toggle();
+
   return (
-    <main className="min-h-screen p-4 sm:p-6">
-      <div className="max-w-3xl mx-auto pb-16">
-        {/* Header */}
-        <header className="flex items-center justify-between gap-4 mb-5">
+    <main className="min-h-screen p-4 sm:p-6 lg:py-0">
+      <div
+        className={
+          showResults
+            ? "max-w-[1480px] mx-auto pb-16 lg:pb-0"
+            : "max-w-3xl mx-auto pb-16"
+        }
+      >
+        {/* Header — on desktop results it lives at the top of the sidebar */}
+        <header
+          className={`flex items-center justify-between gap-4 mb-5 ${
+            showResults ? "lg:hidden" : ""
+          }`}
+        >
           <Link
             href="/"
             className="inline-flex items-center gap-2.5 min-h-11 bg-coal border-2 border-black shadow-hard-sm px-3.5 py-2 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
@@ -386,104 +392,110 @@ export default function ResultsPage({
             </Link>
           </div>
         )}
-        {/* Results */}
-        {data?.status === "done" && result && (
-          <div className="space-y-4 sm:space-y-5">
-            {result.source_name && (
-              <h1 className="font-bold text-paper text-lg sm:text-2xl tracking-tight break-words">
-                {result.source_name}
-              </h1>
-            )}
-            {/* Stats */}
-            <div className="flex flex-wrap items-center gap-2.5">
-              <StatChip
-                icon="/icons/note.svg"
-                label="chords"
-                value={`${result.chords.length}`}
+        {/* Results — desktop: sticky control panel left, sheet right.
+            Mobile: controls stacked, then a sticky now/next + play bar over
+            the sheet so playback stays in reach while reading. */}
+        {showResults && result && (
+          <div className="lg:grid lg:grid-cols-[minmax(340px,400px)_minmax(0,1fr)] lg:gap-8 xl:gap-12">
+            <aside
+              aria-label="Playback and chord controls"
+              className="space-y-4 lg:sticky lg:top-0 lg:h-screen lg:overflow-y-auto lg:py-6 lg:pr-3 lg:-mr-3 panel-scroll"
+            >
+              <div className="hidden lg:flex items-center justify-between gap-3">
+                <Link
+                  href="/"
+                  className="inline-flex items-center gap-2 min-h-10 bg-coal border-2 border-black shadow-hard-sm px-3 py-1.5 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
+                >
+                  <Image src="/icons/upload.svg" alt="" width={18} height={18} className="w-4.5 h-4.5" />
+                  new song
+                </Link>
+                <Image src="/logo.webp" alt="Chordex" width={140} height={93} className="w-24 h-auto" />
+              </div>
+
+              {/* Song */}
+              <div>
+                {result.source_name && (
+                  <h1
+                    title={result.source_name}
+                    className="font-bold text-paper text-lg sm:text-xl lg:text-lg xl:text-xl tracking-tight leading-snug break-words line-clamp-2"
+                  >
+                    {result.source_name}
+                  </h1>
+                )}
+                <p className="font-cl text-paper-dim text-xs sm:text-sm mt-1.5 flex flex-wrap gap-x-2 gap-y-1">
+                  <span>{transposedKey ?? originalKey ?? "key ?"}</span>
+                  <span aria-hidden>·</span>
+                  <span>
+                    {result.tempo != null && result.tempo > 0
+                      ? `${Math.round(result.tempo)} bpm`
+                      : "— bpm"}
+                  </span>
+                  <span aria-hidden>·</span>
+                  <span>{durationLabel}</span>
+                  {result.lyrics_language && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span>
+                        {languageName(result.lyrics_language)}
+                        {result.lyrics_language_prob != null &&
+                          result.lyrics_language_prob < 0.5 &&
+                          " (guessed)"}
+                      </span>
+                    </>
+                  )}
+                </p>
+                <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                  {result.lyrics_source && result.lyrics_source !== "asr" && (
+                    <span className="inline-flex items-center bg-lime border-2 border-black px-2 py-0.5 font-cl text-ink text-[11px] uppercase tracking-wider">
+                      verified lyrics
+                    </span>
+                  )}
+                  {result.lyrics_source === "asr" &&
+                    (result.lyric_lines?.length ?? 0) > 0 && (
+                      <span className="inline-flex items-center border-2 border-soot px-2 py-0.5 font-cl text-paper-dim text-[11px] uppercase tracking-wider">
+                        machine-transcribed
+                      </span>
+                    )}
+                  {(result.lyrics_status === "pending" ||
+                    result.lyrics_status === "processing") && (
+                    <span className="font-cl text-gold text-xs animate-blink">
+                      lyrics still cooking
+                      {data?.stage ? ` — ${stageLabel(data.stage)}…` : "…"}
+                    </span>
+                  )}
+                </div>
+                {result.lyrics_language_prob != null &&
+                  result.lyrics_language_prob < 0.5 && (
+                    <p className="font-cl text-paper-dim/80 text-xs mt-2">
+                      Lyrics look wrong? Pick the language when you upload.
+                    </p>
+                  )}
+              </div>
+
+              <AudioPlayer
+                ref={playerRef}
+                src={audioUrl(jobId)}
+                chords={displayChords}
+                onTimeUpdate={setPlayhead}
+                onPlayingChange={setPlaying}
+                seekTo={seekTo}
               />
-              <StatChip
-                icon="/icons/speed.svg"
-                label="bpm"
-                value={
-                  result.tempo != null && result.tempo > 0
-                    ? `${Math.round(result.tempo)}`
-                    : "—"
-                }
-              />
-              <StatChip
-                icon="/icons/timer.svg"
-                label="len"
-                value={durationLabel}
-              />
-              {result.lyrics_language && (
-                <StatChip
-                  icon="/icons/mic.svg"
-                  label="vox"
-                  value={
-                    // auto-detected with low confidence → say so, and hint
-                    // that picking the language on upload helps
-                    result.lyrics_language_prob != null &&
-                    result.lyrics_language_prob < 0.5
-                      ? `${result.lyrics_language}?`
-                      : result.lyrics_language
-                  }
+
+              <div className="hidden lg:block">
+                <NowNextBar
+                  chords={displayChords}
+                  activeIndex={activeIndex}
+                  currentTime={playhead}
+                  playing={playing}
+                  onSeek={seek}
+                  sticky={false}
+                  compact
                 />
-              )}
-              {result.lyrics_language_prob != null &&
-                result.lyrics_language_prob < 0.5 && (
-                  <span className="font-cl text-paper-dim text-xs self-center">
-                    language guessed — pick it on upload if lyrics look wrong
-                  </span>
-                )}
-              {result.lyrics_source && result.lyrics_source !== "asr" && (
-                <span className="inline-flex items-center min-h-9 bg-lime border-2 border-black shadow-hard-sm px-3 py-2">
-                  <span className="font-cl text-ink text-xs uppercase tracking-wider">
-                    verified lyrics
-                  </span>
-                </span>
-              )}
-              {result.lyrics_source === "asr" &&
-                result.lyric_lines &&
-                result.lyric_lines.length > 0 && (
-                  <span className="font-cl text-paper-dim text-xs sm:text-sm self-center">
-                    machine-transcribed — may have errors
-                  </span>
-                )}
-              {result.engine && (
-                <span className="font-cl text-paper-dim text-xs sm:text-sm self-center">
-                  via {result.engine}
-                </span>
-              )}
-              {/* S3: chords render first; lyrics stream in behind. */}
-              {(result.lyrics_status === "pending" ||
-                result.lyrics_status === "processing") && (
-                <span className="font-cl text-paper-dim text-xs sm:text-sm self-center animate-blink">
-                  lyrics still cooking
-                  {data?.stage ? ` — ${stageLabel(data.stage)}…` : "…"}
-                </span>
-              )}
-            </div>
+              </div>
 
-            <AudioPlayer
-              src={audioUrl(jobId)}
-              chords={displayChords}
-              onTimeUpdate={setPlayhead}
-              onPlayingChange={setPlaying}
-              seekTo={seekTo}
-            />
-
-            <NowNextBar
-              chords={displayChords}
-              activeIndex={activeIndex}
-              currentTime={playhead}
-              playing={playing}
-              onSeek={seek}
-            />
-
-            {/* Toolbar: transpose + easy + copy */}
-            <div className="bg-coal border-2 border-black shadow-hard p-3 sm:p-4">
-              <div className="flex flex-wrap items-stretch gap-3 sm:gap-4">
-                <div className="flex-1 min-w-[16rem] bg-ink/45 border-2 border-soot px-3.5 py-3">
+              {/* Chord controls */}
+              <div className="bg-coal border-2 border-black shadow-hard divide-y-2 divide-soot">
+                <div className="p-3.5 sm:p-4">
                   <TransposeControl
                     semitones={semitones}
                     onChange={setSemitones}
@@ -491,7 +503,7 @@ export default function ResultsPage({
                     transposedKey={transposedKey}
                   />
                 </div>
-                <div className="flex-1 min-w-[16rem] bg-ink/45 border-2 border-soot px-3.5 py-3">
+                <div className="p-3.5 sm:p-4">
                   <EasyModeControl
                     enabled={easyMode}
                     onChange={setEasyMode}
@@ -500,68 +512,85 @@ export default function ResultsPage({
                     easyKey={easy?.easyKey ?? result.easy?.easy_key ?? undefined}
                   />
                 </div>
+              </div>
+
+              <p className="hidden lg:block font-cl text-paper-dim/70 text-xs text-center pb-2">
+                auto-generated · {result.engine ? `chords via ${result.engine} · ` : ""}
+                trust your ear on complex tracks
+              </p>
+            </aside>
+
+            {/* The sheet */}
+            <section aria-label="Chord sheet" className="mt-5 lg:mt-0 lg:py-6 min-w-0 space-y-4">
+              {/* Sheet view controls live with the sheet */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                {hasRoman ? (
+                  <div className="flex items-center gap-3">
+                    <span className="font-cl text-paper-dim text-xs uppercase tracking-[0.2em]">
+                      Lyrics in
+                    </span>
+                    <div
+                      role="group"
+                      aria-label="Lyrics script"
+                      className="inline-flex border-2 border-black shadow-hard-sm"
+                    >
+                      {(["roman", "native", "both"] as const).map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setScript(s)}
+                          aria-pressed={script === s}
+                          className={`min-h-10 px-3 sm:px-3.5 py-2 font-pixel text-xs sm:text-sm border-r-2 border-black last:border-r-0 transition-colors ${
+                            script === s
+                              ? "bg-gold text-ink"
+                              : "bg-coal text-paper-dim hover:text-paper"
+                          }`}
+                        >
+                          {s === "native" ? "ORIGINAL" : s === "roman" ? "ENGLISH" : "BOTH"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <span />
+                )}
                 <button
                   type="button"
                   onClick={handleCopy}
-                  className="self-center w-full sm:w-auto min-h-11 inline-flex items-center justify-center gap-2 font-pixel text-xs sm:text-sm px-5 py-2.5 bg-paper text-ink border-2 border-black shadow-hard-sm hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-transform"
+                  title="Copy as ChordPro text (chords inline on their syllables)"
+                  className="min-h-10 inline-flex items-center justify-center gap-2 font-pixel text-xs sm:text-sm px-4 py-2 bg-paper text-ink border-2 border-black shadow-hard-sm hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-transform"
                 >
-                  <Image
-                    src="/icons/copy.svg"
-                    alt=""
-                    width={16}
-                    height={16}
-                    className="w-4 h-4"
-                  />
-                  {copied ? "COPIED!" : "COPY"}
+                  <Image src="/icons/copy.svg" alt="" width={16} height={16} className="w-4 h-4" />
+                  {copied ? "COPIED!" : "COPY SHEET"}
                 </button>
               </div>
-            </div>
-
-            {/* The sheet */}
-            {result.sheet?.rows.some(
-              (r) => r.kind === "line" && r.words.some((w) => w.roman)
-            ) && (
-                <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
-                  <span className="font-cl text-paper-dim text-xs uppercase tracking-[0.2em]">
-                    Lyrics in
-                  </span>
-                  <div
-                    role="group"
-                    aria-label="Lyrics script"
-                    className="inline-flex border-2 border-black shadow-hard-sm"
-                  >
-                    {(["native", "roman", "both"] as const).map((s) => (
-                      <button
-                        key={s}
-                        type="button"
-                        onClick={() => setScript(s)}
-                        aria-pressed={script === s}
-                        className={`min-h-9 px-3.5 py-2 font-pixel text-xs sm:text-sm border-r-2 border-black last:border-r-0 transition-colors ${
-                          script === s
-                            ? "bg-gold text-ink"
-                            : "bg-coal text-paper-dim hover:text-paper"
-                        }`}
-                      >
-                        {s === "native" ? "ORIGINAL" : s === "roman" ? "ENGLISH" : "BOTH"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            <ChordSheet
-              chords={displayChords}
-              sheet={result.sheet}
-              hasLyrics={Boolean(result.lyrics?.length || result.lyric_lines?.length)}
-              script={script}
-              currentTime={playhead}
-              activeChord={activeIndex}
-              lyricsError={result.lyrics_error}
-              onSeek={seek}
-            />
-
-            <p className="font-cl text-paper-dim text-xs sm:text-sm text-center pt-1 pb-2">
-              auto-generated — always trust your ear on complex tracks
-            </p>
+              {/* the wrapper is the sticky element: a sticky child can't
+                  outlive a parent that only wraps it */}
+              <div className="lg:hidden sticky top-0 z-20 -mx-1 px-1 pt-3 pb-2 bg-ink shadow-hard">
+                <NowNextBar
+                  chords={displayChords}
+                  activeIndex={activeIndex}
+                  currentTime={playhead}
+                  playing={playing}
+                  onSeek={seek}
+                  onTogglePlay={togglePlay}
+                  sticky={false}
+                />
+              </div>
+              <ChordSheet
+                chords={displayChords}
+                sheet={result.sheet}
+                hasLyrics={Boolean(result.lyrics?.length || result.lyric_lines?.length)}
+                script={script}
+                currentTime={playhead}
+                activeChord={activeIndex}
+                lyricsError={result.lyrics_error}
+                onSeek={seek}
+              />
+              <p className="lg:hidden font-cl text-paper-dim text-xs sm:text-sm text-center pt-1 pb-2">
+                auto-generated — always trust your ear on complex tracks
+              </p>
+            </section>
           </div>
         )}
       </div>
