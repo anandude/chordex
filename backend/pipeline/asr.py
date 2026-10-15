@@ -54,6 +54,11 @@ SR = 16000
 _fw_models: dict[str, Any] = {}
 _hf_pipes: dict[str, Any] = {}
 _conformer_models: dict[str, Any] = {}
+_indic_transcribe: dict[str, Any] = {}
+
+#: Bodhan AI / AI4Bharat Indic-Transcribe (Canary 1.2B, gated, Indic Open Model
+#: License). Text-only output — word timing comes from the forced aligner.
+INDIC_TRANSCRIBE_REPOS = ("bodhan-ai/indic-transcribe-core", "bodhan-ai/indic-transcribe-flex")
 
 #: Progress band for model load + transcription, shared with lyrics_transcriber
 #: (which hands us 0.45 and expects ~0.8 back before alignment).
@@ -147,6 +152,21 @@ def _evict_fw(keep: set[str]) -> None:
     gc.collect()
 
 
+def _free_indic_transcribe() -> None:
+    if _indic_transcribe:
+        import gc
+
+        logger.info("unloading Indic-Transcribe")
+        _indic_transcribe.clear()
+        gc.collect()
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+
 def _get_fw_model(name: str, cfg: LyricsConfig):
     """Load (or reuse) a faster-whisper model.
 
@@ -159,6 +179,7 @@ def _get_fw_model(name: str, cfg: LyricsConfig):
     from faster_whisper import WhisperModel
 
     _evict_fw(keep={cfg.lid_model})
+    _free_indic_transcribe()
     device = whisper_device(cfg.whisper_device)
     compute = whisper_compute_type(device, cfg.whisper_compute_type)
     logger.info("loading faster-whisper model=%s device=%s compute=%s", name, device, compute)
@@ -462,6 +483,95 @@ def _transcribe_conformer(
     return words, lines, lang
 
 
+def _get_indic_transcribe(repo: str, cfg: LyricsConfig):
+    """Load Indic-Transcribe from its (gated) repo. The model code ships inside
+    the repo (reviewed: no network/subprocess/pickle use); the NeMo checkpoint
+    under nemo/ is not downloaded."""
+    if repo in _indic_transcribe:
+        return _indic_transcribe[repo]
+    import sys
+
+    import torch
+    from huggingface_hub import snapshot_download
+
+    _evict_fw(keep=set())  # 1.2B params: make room on a 4 GB card
+    _free_indic_transcribe()
+    path = snapshot_download(repo, ignore_patterns=["nemo/*"],
+                             token=cfg.hf_token or None)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    from indic_transcribe import IndicTranscribe
+
+    device = cfg.torch_device()
+    # The checkpoint defaults to bf16 on GPU; Turing cards (GTX 16xx/RTX 20xx)
+    # have no bf16, so use fp16 there (~2.4 GB) and fp32 on CPU.
+    dtype = torch.float32
+    if device.startswith("cuda"):
+        dtype = (torch.bfloat16 if torch.cuda.is_bf16_supported(including_emulation=False)
+                 else torch.float16)
+    logger.info("loading Indic-Transcribe %s device=%s dtype=%s", repo, device, dtype)
+    _indic_transcribe[repo] = IndicTranscribe.from_pretrained(path, device=device, dtype=dtype)
+    return _indic_transcribe[repo]
+
+
+def _transcribe_indic_transcribe(
+    y: np.ndarray, lang: str | None, repo: str, cfg: LyricsConfig,
+    on_progress: Callable[[float], None] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    """Decode each voiced window (≤ 30 s — the checkpoint's training length).
+
+    Returns window-level ``raw_lines`` (exact spans) and rough words spread
+    evenly inside each window; the caller aligns per window for real timing.
+    """
+    asr = _get_indic_transcribe(repo, cfg)
+    _to_device(asr, asr.device)
+    try:
+        return _decode_windows(asr, y, lang, on_progress)
+    finally:
+        # 2.4 GB fp16 must leave the GPU before the aligner (1.2 GB) runs on a
+        # 4 GB card; parking it in RAM makes the next job's reload ~1 s.
+        if str(asr.device).startswith("cuda"):
+            _to_device(asr, "cpu")
+
+
+def _to_device(asr: Any, device: str) -> None:
+    import torch
+
+    if next(asr.model.parameters()).device.type != torch.device(device).type:
+        asr.model.to(device)
+        if device == "cpu":
+            torch.cuda.empty_cache()
+
+
+def _decode_windows(
+    asr: Any, y: np.ndarray, lang: str | None,
+    on_progress: Callable[[float], None] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    windows = voiced_windows(y, 30.0)
+    words: list[dict[str, Any]] = []
+    raw_lines: list[dict[str, Any]] = []
+    detected = lang
+    for i, (s, e) in enumerate(windows):
+        seg = y[int(s * SR):int(e * SR)]
+        if len(seg) < SR // 4:
+            continue
+        text = asr.transcribe(seg, lang=detected) if detected else None
+        if text is None:  # no language given: let the model identify it once
+            text, lid = asr.transcribe(seg, lang=None, return_lid=True)
+            detected = lid.get("lang") or detected
+        text = (text or "").strip()
+        if text:
+            raw_lines.append({"timestamp": round(s, 3), "end": round(e, 3), "text": text})
+            toks = text.split()
+            per = (e - s) / max(1, len(toks))
+            words.extend({"timestamp": round(s + k * per, 3),
+                          "end": round(s + (k + 1) * per, 3), "word": t}
+                         for k, t in enumerate(toks))
+        if on_progress:
+            on_progress((i + 1) / max(1, len(windows)))
+    return words, raw_lines, detected
+
+
 def transcribe_asr(
     vocal_path: str | Path, language: str | None = None,
     cfg: LyricsConfig | None = None,
@@ -492,15 +602,22 @@ def transcribe_asr(
             _report(progress, "transcribing",
                     _PCT_TRANSCRIBE + (_PCT_TRANSCRIBE_END - _PCT_TRANSCRIBE) * frac)
 
-        _announce_model(model_name, progress)
-        if model_name == "ai4bharat/indic-conformer-600m-multilingual":
+        if model_name not in INDIC_TRANSCRIBE_REPOS:
+            _announce_model(model_name, progress)
+        timing = "word"
+        if model_name in INDIC_TRANSCRIBE_REPOS:
+            words, raw_lines, detected = _transcribe_indic_transcribe(
+                y, lang, model_name, cfg, _progress)
+            timing = "window"  # text only: words must be aligned per window
+        elif model_name == "ai4bharat/indic-conformer-600m-multilingual":
             words, raw_lines, detected = _transcribe_conformer(y, lang, cfg)
         elif "/" in model_name and not Path(model_name).is_dir():  # HF fine-tune
             words, raw_lines, detected = _transcribe_hf(y, lang, model_name, cfg, _progress)
         else:  # faster-whisper / CTranslate2 name or local dir
             words, raw_lines, detected = _transcribe_fw(y, lang, model_name, cfg, _progress)
         _report(progress, "transcribing", _PCT_TRANSCRIBE_END)
-        words = _dedupe_seams(words)
+        if timing == "word":
+            words = _dedupe_seams(words)
         words = _drop_repeat_loops(words)
         lines = _lines_from_words(words, raw_lines)
         logger.info("asr done model=%s words=%d lines=%d in %.1fs",
@@ -509,7 +626,7 @@ def transcribe_asr(
             "lyrics": words, "lines": lines, "segments": raw_lines,
             "language": detected or lang, "language_prob": lang_prob,
             "error": None, "model": model_name,
-            "source": "asr",
+            "source": "asr", "timing": timing,
         }
     except Exception as exc:
         logger.exception("ASR failed model=%s", model_name)

@@ -13,6 +13,20 @@ import os
 from dataclasses import dataclass, field
 
 
+#: Default model per language. ml: Bodhan AI / AI4Bharat Indic-Transcribe-core
+#: (Voice of India Malayalam OIWER 11.5 vs IndicConformer 28.2; on our
+#: Malayalam test song it produced clean, correct lyrics where the Whisper
+#: fine-tune produced fragments). Gated — needs HF login + accepted terms;
+#: falls back to _FALLBACK_ROUTES when unavailable.
+_BUILTIN_ROUTES = {
+    "ml": "bodhan-ai/indic-transcribe-core",
+    "hi": "adalat-ai/whisper-medium-hi-high-lr",
+}
+_FALLBACK_ROUTES = {
+    "ml": "adalat-ai/whisper-medium-ml-rmft",
+}
+
+
 def ct2_dir_for(model_id: str) -> "Path":
     """Local CTranslate2 conversion dir for an HF model id (scripts/convert_ct2.py)."""
     from pathlib import Path
@@ -146,10 +160,7 @@ class LyricsConfig:
         """Phase 3 routing table. HF fine-tunes contain '/' and load via the
         transformers runtime; plain names (small, large-v3-turbo) use
         faster-whisper. Env JSON overrides win over built-ins."""
-        builtin = {
-            "ml": "adalat-ai/whisper-medium-ml-rmft",
-            "hi": "adalat-ai/whisper-medium-hi-high-lr",
-        }
+        builtin = dict(_BUILTIN_ROUTES)
         if self.whisper_model_overrides_json:
             try:
                 parsed = json.loads(self.whisper_model_overrides_json)
@@ -159,6 +170,16 @@ class LyricsConfig:
         name = builtin[language] if language and language in builtin else self.whisper_model
         # A2: prefer a local CTranslate2 conversion (batched faster-whisper)
         # over the transformers runtime for HF fine-tunes.
+        if "/" in name:
+            ct2 = ct2_dir_for(name)
+            if (ct2 / "model.bin").exists():
+                return str(ct2)
+        return name
+
+    def asr_fallback_for(self, language: str | None) -> str:
+        """Model to retry with when the routed model fails (e.g. a gated repo
+        without access): the language's previous fine-tune, else WHISPER_MODEL."""
+        name = _FALLBACK_ROUTES.get(language or "", self.whisper_model)
         if "/" in name:
             ct2 = ct2_dir_for(name)
             if (ct2 / "model.bin").exists():

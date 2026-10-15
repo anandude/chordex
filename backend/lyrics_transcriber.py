@@ -213,12 +213,13 @@ def transcribe_lyrics(
             stages["transcription"] = round(_time.time() - t0, 2)
             models["asr"] = str(asr_out.get("model", ""))
             if asr_out.get("error") and not asr_out.get("lyrics") \
-                    and asr_out.get("model") != cfg.whisper_model:
-                # Fine-tune failed (missing weights/dep)? Retry the same
-                # pipeline with the stock WHISPER_MODEL — never fail the job.
+                    and asr_out.get("model") != cfg.asr_fallback_for(
+                        asr_out.get("language") or lang_hint):
+                # Routed model failed (gated repo, missing weights/dep)? Retry
+                # with the language's fallback model — never fail the job.
+                fb_model = cfg.asr_fallback_for(asr_out.get("language") or lang_hint)
                 logger.warning("ASR with %s failed (%s) — retrying with %s",
-                               asr_out.get("model"), asr_out.get("error"),
-                               cfg.whisper_model)
+                               asr_out.get("model"), asr_out.get("error"), fb_model)
                 import dataclasses
 
                 t_fb = _time.time()
@@ -226,7 +227,7 @@ def transcribe_lyrics(
                 # doesn't route straight back to the failed fine-tune
                 fb_lang = asr_out.get("language") or lang_hint
                 fb_cfg = dataclasses.replace(cfg, whisper_model_overrides_json=json.dumps(
-                    {fb_lang or "_": cfg.whisper_model}))
+                    {fb_lang or "_": fb_model}))
                 failed_model = asr_out.get("model", "?")
                 asr_out = transcribe_asr(vocal_path, language=fb_lang, cfg=fb_cfg,
                                          progress=_report, audio=_stem_audio())
@@ -237,31 +238,48 @@ def transcribe_lyrics(
             lang_hint = asr_out.get("language") or lang_hint
             lang_prob = asr_out.get("language_prob")
             raw_text: str | None = None
+            if asr_out.get("timing") == "window":
+                # Text-only ASR (Indic-Transcribe): its words are evenly spread
+                # guesses. Align each decoded window as a timed line instead —
+                # the window span is exact — then regroup lines at pauses.
+                lookup_lines = None
+                window_lines = asr_out.get("segments") or []
+            else:
+                window_lines = None
         else:
             words = []
             lines = lookup_lines
             raw_text = lookup_text
+            window_lines = None
 
         # ── Phase 4: (re-)align to the chord timebase ──
         _report("aligning", 0.8)
         t0 = _time.time()
-        if cfg.alignment_enabled and (raw_text or words):
+        if cfg.alignment_enabled and (raw_text or words or window_lines):
             from pipeline.alignment import align
 
-            aligned = align(
-                vocal_path,
-                raw_text if lookup_lines is not None else None,
-                language=lang_hint,
-                lines=lines if lookup_lines is not None else None,
-                words=words or None,
-                duration=duration,
-                cfg=cfg,
-                audio=_stem_audio(),
-            )
-            words = aligned.get("words", words)
-            # aligned lines are timed from their words (w0..w1 index range),
-            # for LRCLIB and ASR alike — one timebase for lines, words, chords
-            lines = aligned.get("lines") or lines
+            if window_lines:
+                aligned = align(vocal_path, None, language=lang_hint,
+                                lines=window_lines, duration=duration, cfg=cfg,
+                                audio=_stem_audio())
+                words = aligned.get("words", words)
+                # windows are up to 30 s — regroup display lines at vocal pauses
+                lines = _lines_from_words(words, window_lines)
+            else:
+                aligned = align(
+                    vocal_path,
+                    raw_text if lookup_lines is not None else None,
+                    language=lang_hint,
+                    lines=lines if lookup_lines is not None else None,
+                    words=words or None,
+                    duration=duration,
+                    cfg=cfg,
+                    audio=_stem_audio(),
+                )
+                words = aligned.get("words", words)
+                # aligned lines are timed from their words (w0..w1 index range),
+                # for LRCLIB and ASR alike — one timebase for lines, words, chords
+                lines = aligned.get("lines") or lines
             models["alignment"] = str(aligned.get("backend", ""))
             if aligned.get("error"):
                 logger.info("alignment note: %s", aligned["error"])
