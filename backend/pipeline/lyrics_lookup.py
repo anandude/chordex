@@ -39,6 +39,13 @@ _ARTIST_MIN_RATIO = 0.5
 
 # ── metadata ──────────────────────────────────────────────────────────────
 
+_SITE_SUFFIX = re.compile(
+    r"\s*[-–—|:]\s*(pagal\w*|mr-?jatt\w*|djpunjab\w*|songs?\.?pk|webmusic\w*|"
+    r"downloadming\w*|[\w-]+\.(com|net|in|org|pk|me|io|cc|info))\s*$",
+    re.IGNORECASE,
+)
+
+
 def _tags_from_file(audio_path: Path) -> dict[str, str]:
     """ID3/metadata tags via mutagen (optional dep — missing file types ok)."""
     meta: dict[str, str] = {}
@@ -51,7 +58,10 @@ def _tags_from_file(audio_path: Path) -> dict[str, str]:
         for key in ("title", "artist", "album"):
             vals = audio.get(key)
             if vals:
-                meta[key] = str(vals[0]).strip()
+                # download sites append themselves: "Song - PagalNew"
+                val = _SITE_SUFFIX.sub("", str(vals[0])).strip()
+                if val:
+                    meta[key] = val
     except ImportError:
         logger.debug("mutagen not installed — filename heuristics only")
     except Exception as exc:
@@ -156,6 +166,20 @@ def _ratio(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
+def _artist_ratio(a: str, b: str) -> float:
+    """Order-insensitive: 'Palak Muchhal, Arijit Singh' vs 'Arijit Singh &
+    Palak Muchhal' is the same credit. Also accepts one credited artist
+    being contained in the other's list."""
+    def toks(x: str) -> list[str]:
+        return sorted(t for t in re.split(r"[^\w]+", x.lower()) if t and t not in {"and", "feat", "ft"})
+
+    ta, tb = toks(a), toks(b)
+    best = max(_ratio(a, b), _ratio(" ".join(ta), " ".join(tb)))
+    if ta and tb and (set(ta) <= set(tb) or set(tb) <= set(ta)):
+        best = max(best, 0.9)
+    return best
+
+
 def _accept(
     candidate: dict[str, Any], meta: dict[str, str], duration: float | None
 ) -> bool:
@@ -177,7 +201,7 @@ def _accept(
             return False
     artist = meta.get("artist", "")
     if artist and candidate.get("artistName"):
-        if _ratio(artist, str(candidate["artistName"])) < _ARTIST_MIN_RATIO:
+        if _artist_ratio(artist, str(candidate["artistName"])) < _ARTIST_MIN_RATIO:
             return False
     return True
 
@@ -197,7 +221,7 @@ def _pick_best(
         if meta.get("title") and c.get("trackName"):
             score += _ratio(meta["title"], str(c["trackName"]))
         if meta.get("artist") and c.get("artistName"):
-            score += 0.5 * _ratio(meta["artist"], str(c["artistName"]))
+            score += 0.5 * _artist_ratio(meta["artist"], str(c["artistName"]))
         scored.append((score, c))
     if not scored:
         return None

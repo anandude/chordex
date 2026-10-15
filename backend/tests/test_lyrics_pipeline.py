@@ -487,3 +487,13 @@ def test_metadata_uses_original_upload_filename(tmp_path):
     assert m["artist"] == "Arijit Singh" and m["title"] == "Kesariya"
     # no hint: the stored name "audio" is noise, so no bogus lookup happens
     assert "title" not in get_metadata(stored)
+
+
+def test_tag_cleanup_and_artist_order_insensitive():
+    from pipeline.lyrics_lookup import _SITE_SUFFIX, _artist_ratio
+
+    assert _SITE_SUFFIX.sub("", "Chahun Main Ya Naa - PagalNew") == "Chahun Main Ya Naa"
+    assert _SITE_SUFFIX.sub("", "Hold On - Live") == "Hold On - Live"
+    assert _artist_ratio("Palak Muchhal, Arijit Singh", "Arijit Singh & Palak Muchhal") > 0.9
+    assert _artist_ratio("Arijit Singh", "Arijit Singh, Palak Muchhal") >= 0.9
+    assert _artist_ratio("Hariharan", "Shreya Ghoshal") < 0.5
