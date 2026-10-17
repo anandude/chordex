@@ -5,7 +5,7 @@ The live site is split in two. Local development (`./start.sh`) is unchanged.
 | Part | Where | Config |
 |---|---|---|
 | Backend (API, worker, Redis) | InstaBox machine `chordex` (4 vCPU, 8 GB, CPU only) | this folder |
-| Frontend (Next.js) | Vercel, root directory `frontend` | `NEXT_PUBLIC_API_URL` |
+| Frontend (Next.js) | Vercel project `chordex` → https://chordex-eta.vercel.app | `NEXT_PUBLIC_API_URL` |
 
 ## Backend on InstaBox
 
@@ -30,7 +30,9 @@ Logs: `docker compose logs -f worker`.
 
 ## Frontend on Vercel
 
-Set `NEXT_PUBLIC_API_URL` to the InstaBox URL (no trailing slash) for
+Deploy from `frontend/` with `vercel deploy --prod` (`vercel.json` pins the
+Next.js preset; `.vercelignore` keeps `.env.local` out). Set
+`NEXT_PUBLIC_API_URL` to the InstaBox URL (no trailing slash) for
 Production, then redeploy: the value is baked in at build time. Put the Vercel
 domain in the backend's `ALLOWED_ORIGINS` and run `docker compose up -d`.
 

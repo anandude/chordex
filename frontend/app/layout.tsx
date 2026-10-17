@@ -51,6 +51,7 @@ const notoMlym = Noto_Sans_Malayalam({
 
 export const metadata: Metadata = {
   title: "Chordex — chords + lyrics from any song",
+  applicationName: "Chordex",
   description:
     "Upload a song and get every chord with timestamps, synced lyrics, transpose and easy-chord modes.",
 };
