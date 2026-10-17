@@ -18,8 +18,13 @@ x-backend-env: &backend-env
   WHISPER_COMPUTE_TYPE: int8
   LYRICS_DEVICE: cpu
   LYRICS_SEPARATION_BACKEND: demucs
+  # ~15-20% faster separation on CPU (demucs default 0.25)
+  LYRICS_DEMUCS_OVERLAP: "0.1"
   LYRICS_LRCLIB: "1"
   LYRICS_ALIGNMENT: "1"
+  # "1" = int8 aligner: ~5x faster alignment, but ~1 in 6 words lands
+  # >100 ms differently. Try it by ear before leaving it on.
+  LYRICS_ALIGN_INT8: "0"
   LYRICS_LLM_CLEANUP: "0"
   LYRICS_CACHE_DIR: /data/lyrics_cache
   # CTranslate2 conversions of the HF fine-tunes (made by prewarm.py)
@@ -51,8 +56,23 @@ services:
       - redis
     command: uvicorn main:app --host 0.0.0.0 --port 8000
 
-  # One worker serves chord_jobs first, then lyrics_jobs. A second worker
-  # would double model RAM, which 8 GB can't spare.
+  # Chords get their own small worker (no ML models, ~0.5 GB) so a song's
+  # chords never wait behind someone else's minutes-long lyrics job. Lyrics
+  # stay on one worker: the models need ~2 GB and the 4 vCPUs are already
+  # saturated by one lyrics job.
+  chord-worker:
+    image: chordex-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *backend-env
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      - redis
+      - api
+    command: python worker.py chord_jobs
+
   worker:
     image: chordex-backend
     restart: unless-stopped
@@ -68,18 +88,21 @@ services:
     depends_on:
       - redis
       - api
-    command: python worker.py
+    command: python worker.py lyrics_jobs
 
   # Results expire from Redis after an hour, but uploaded audio stays on
-  # disk. Delete it after two hours so the 20 GB disk doesn't fill up.
+  # disk: delete it after two hours. Separated vocal stems (the repeat-song
+  # cache, ~10 MB per song) go after a week, so the 20 GB disk doesn't fill.
   cleanup:
     image: alpine:3.20
     restart: unless-stopped
     volumes:
       - uploads:/data/uploads
+      - lyrics_cache:/data/lyrics_cache
     command: >
       sh -c 'while true; do
         find /data/uploads -type f -mmin +120 -delete;
+        find /data/lyrics_cache -type f -mtime +7 -delete;
         sleep 1800;
       done'
 

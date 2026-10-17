@@ -54,6 +54,7 @@ class LyricsConfig:
     # htdemucs (single model) by default: htdemucs_ft is a bag of 4 models,
     # ~4x the compute for a small vocal-quality gain. Opt in via env.
     demucs_model: str = "htdemucs"
+    demucs_overlap: float = 0.25  # demucs default; 0.1 ≈ 15–20% faster on CPU
     roformer_model: str = ""  # empty = resolve from audio-separator model list at runtime
     dereverb: bool = False
     dereverb_model: str = ""
@@ -87,6 +88,9 @@ class LyricsConfig:
 
     # Phase 4 — alignment
     alignment_enabled: bool = True
+    # int8 dynamic quantisation of the CPU aligner: ~5x faster, but ~17% of
+    # words moved >100 ms on hi_chahun (unverified which is closer) — opt-in.
+    align_int8: bool = False
     alignment_model: str = "MahmoudAshraf/mms-300m-1130-forced-aligner"
 
     # Phase 5 — cleanup / romanisation
@@ -114,6 +118,7 @@ class LyricsConfig:
         return cls(
             separation_backend=sep,
             demucs_model=_env("LYRICS_DEMUCS_MODEL", "htdemucs"),
+            demucs_overlap=float(_env("LYRICS_DEMUCS_OVERLAP", "0.25")),
             roformer_model=_env("LYRICS_ROFORMER_MODEL", ""),
             dereverb=_env_flag("LYRICS_DEREVERB", False),
             dereverb_model=_env("LYRICS_DEREVERB_MODEL", ""),
@@ -132,6 +137,7 @@ class LyricsConfig:
             asr_chunk_overlap_s=int(_env("LYRICS_ASR_OVERLAP_S", "2")),
             hf_token=_env("HF_TOKEN", ""),
             alignment_enabled=_env_flag("LYRICS_ALIGNMENT", True),
+            align_int8=_env_flag("LYRICS_ALIGN_INT8", False),
             alignment_model=_env(
                 "LYRICS_ALIGNMENT_MODEL",
                 "MahmoudAshraf/mms-300m-1130-forced-aligner",

@@ -5,7 +5,8 @@ The live site is split in two. Local development (`./start.sh`) is unchanged.
 | Part | Where | Config |
 |---|---|---|
 | Backend (API, worker, Redis) | InstaBox machine `chordex` (4 vCPU, 8 GB, CPU only) | this folder |
-| Frontend (Next.js) | Vercel project `chordex` → https://chordex-eta.vercel.app | `NEXT_PUBLIC_API_URL` |
+| Frontend (static) | Cloudflare Pages project `chordex` → https://chordex.pages.dev | `NEXT_PUBLIC_API_URL` at build |
+| Frontend (alt) | Vercel project `chordex` → https://chordex-eta.vercel.app | Vercel env var |
 
 ## Backend on InstaBox
 
@@ -28,6 +29,18 @@ cd ~/chordex && git pull && cd deploy/instabox && docker compose up -d --build
 
 Logs: `docker compose logs -f worker`.
 
+## Frontend on Cloudflare Pages (free)
+
+The site is fully client-side, so it ships as a static export. Every
+`/results/<id>` is served by one page (`public/_redirects`), which reads the id
+from the URL.
+
+```bash
+cd frontend
+NEXT_OUTPUT=export NEXT_PUBLIC_API_URL=https://8000-<id>.instabox.tech npx next build
+npx wrangler pages deploy out --project-name chordex --branch main
+```
+
 ## Frontend on Vercel
 
 Deploy from `frontend/` with `vercel deploy --prod` (`vercel.json` pins the
@@ -41,6 +54,10 @@ domain in the backend's `ALLOWED_ORIGINS` and run `docker compose up -d`.
 - **Idle pause.** The machine pauses after 30 minutes idle. The next request
   wakes it and waits, so the first visit after a quiet spell is slow. A
   machine you paused by hand stays offline until you resume it.
+- **Speed.** Chords and lyrics run on separate workers, so chords appear
+  in ~30–40 s while lyrics continue. `LYRICS_DEMUCS_OVERLAP=0.1` makes
+  separation ~30% faster; `LYRICS_ALIGN_INT8` is an opt-in ~5x faster
+  aligner.
 - **CPU only.** Chords take seconds. Lyrics that aren't on LRCLIB take a few
   minutes (Demucs and Whisper on 4 cores).
 - **YouTube** often blocks cloud IPs. File uploads always work.

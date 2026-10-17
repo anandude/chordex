@@ -3,7 +3,7 @@
 import numpy as np
 
 from pipeline.alignment import (
-    _groups_from_words, _interpolate_missing, ctc_viterbi, split_points,
+    _groups_from_words, _interpolate_missing, _merge_spans, ctc_viterbi, split_points,
 )
 
 
@@ -69,3 +69,45 @@ def test_interpolate_missing_between_anchors():
          {"timestamp": 3.5, "end": 4.0, "confidence": 0.8}]
     _interpolate_missing(w)
     assert [x["timestamp"] for x in w] == [1.0, 1.5, 2.5, 3.5]
+
+
+def test_merge_spans_pads_merges_and_clips():
+    spans = [(10.0, 14.0), (15.0, 18.0), (60.0, 64.0)]
+    assert _merge_spans(spans, 100.0, pad_s=3.0) == [(7.0, 21.0), (57.0, 67.0)]
+    assert _merge_spans([(1.0, 2.0)], 100.0, pad_s=3.0) == [(0.0, 5.0)]
+
+
+def test_merge_spans_full_pass_when_lyrics_cover_most_of_the_song():
+    assert _merge_spans([(0.0, 95.0)], 100.0) is None
+    assert _merge_spans([], 100.0) is None
+
+
+def test_span_emissions_match_full_pass_inside_spans(monkeypatch):
+    """Frames inside a span come from the model; frames outside are
+    certain-blank and the array keeps the full-song length."""
+    import torch
+
+    from pipeline import alignment
+    from pipeline.config import LyricsConfig
+
+    vocab = {"-": 0, "a": 1, "b": 2}
+
+    class Model(torch.nn.Module):  # one frame per 320 samples, class = sample sign
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(1))
+
+        def forward(self, x):
+            fr = x[0, : (x.shape[1] // 320) * 320].reshape(-1, 320).mean(dim=1)
+            em = torch.stack([fr * 0, fr, -fr], dim=-1).unsqueeze(0)
+            return em, None
+
+    monkeypatch.setattr(alignment, "_get_model", lambda cfg: (Model(), vocab, "cpu", torch))
+    y = np.linspace(-1, 1, 60 * alignment.SR, dtype=np.float32)
+    cfg = LyricsConfig()
+    full, _ = alignment.compute_emissions(y, cfg)
+    part, _ = alignment.compute_emissions(y, cfg, spans=[(20.0, 25.0)])
+    assert part.shape == full.shape
+    inside = slice(int(18 * alignment.FPS), int(27 * alignment.FPS))
+    np.testing.assert_allclose(part[inside], full[inside], atol=1e-5)
+    assert (part[: int(10 * alignment.FPS)].argmax(axis=1) == 0).all()

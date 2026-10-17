@@ -1,0 +1,605 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Copy, Upload } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import Link from "next/link";
+import Image from "next/image";
+import { audioUrl, cancelJob, getJobStatus } from "@/lib/api";
+import { STATIC_JOB_ID } from "@/lib/staticJob";
+import { transposeKeyLabel, transposeProgression } from "@/lib/transpose";
+import { applyEasyMode } from "@/lib/easyChords";
+import { activeChordIndex, sheetToChordPro } from "@/lib/chordSheet";
+import AudioPlayer, { PlayerHandle } from "@/components/AudioPlayer";
+import NowNextBar from "@/components/NowNextBar";
+import ChordSheet from "@/components/ChordSheet";
+import TransposeControl from "@/components/TransposeControl";
+import EasyModeControl from "@/components/EasyModeControl";
+
+const PROCESSING_LINES = [
+  "separating vocals from the mix…",
+  "listening for chord changes…",
+  "estimating key & tempo…",
+  "transcribing lyrics…",
+  "snapping chords to the beat…",
+  "looking for easy shapes…",
+  "almost there…",
+];
+
+// Stage ids published by the worker (progress:{job_id}) → readable labels. The
+// model stages matter: a first run in a new language downloads ~1 GB, which
+// used to look like a hang.
+type Script = "native" | "roman" | "both";
+
+const STAGE_LABELS: Record<string, string> = {
+  chords: "detecting chords",
+  fetching_lyrics: "looking for existing lyrics",
+  separating: "isolating the vocals",
+  downloading_model: "downloading the speech model (first run only)",
+  loading_model: "loading the speech model",
+  transcribing: "transcribing the vocals",
+  aligning: "aligning words to the audio",
+  cleaning: "cleaning up the lyrics",
+  done: "wrapping up",
+};
+
+function stageLabel(stage: string): string {
+  return STAGE_LABELS[stage] ?? stage.replace(/_/g, " ");
+}
+
+function queueLabel(queueName: string): string {
+  return queueName.replace(/_jobs$/, "").replace(/_/g, " ");
+}
+
+function formatProgression(
+  chords: Array<{ timestamp: number; chord: string }>,
+  opts?: { capo?: number; easy?: boolean }
+): string {
+  const header: string[] = [];
+  if (opts?.easy) {
+    header.push(
+      opts.capo && opts.capo > 0
+        ? `Easy mode · Capo ${opts.capo}`
+        : "Easy mode · No capo"
+    );
+  }
+  const body = chords
+    .map((c) => {
+      const m = Math.floor(c.timestamp / 60);
+      const s = Math.floor(c.timestamp % 60)
+        .toString()
+        .padStart(2, "0");
+      return `[${m}:${s}] ${c.chord}`;
+    })
+    .join("\n");
+  return header.length ? `${header.join("\n")}\n\n${body}` : body;
+}
+
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: "English", hi: "Hindi", ml: "Malayalam", ta: "Tamil", te: "Telugu",
+  kn: "Kannada", bn: "Bengali", mr: "Marathi", gu: "Gujarati", pa: "Punjabi",
+};
+
+function languageName(code: string): string {
+  return LANGUAGE_NAMES[code] ?? code;
+}
+
+const noopSubscribe = () => () => {};
+
+function useJobId(routeId: string): string {
+  return useSyncExternalStore(
+    noopSubscribe,
+    () =>
+      routeId === STATIC_JOB_ID
+        ? decodeURIComponent(window.location.pathname.split("/").filter(Boolean)[1] ?? "")
+        : routeId,
+    () => routeId,
+  );
+}
+
+export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
+  const jobId = useJobId(routeId);
+  const playerRef = useRef<PlayerHandle>(null);
+  const [semitones, setSemitones] = useState(0);
+  const [easyMode, setEasyMode] = useState(false);
+  const [playhead, setPlayhead] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [seekTo, setSeekTo] = useState<number | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [statusLine, setStatusLine] = useState(0);
+  // Indic lyrics default to English letters (most readers read Hinglish /
+  // Manglish faster than an unfamiliar script); the choice is remembered.
+  // Safe as a lazy initialiser: the sheet only renders after the client fetch.
+  const [script, setScriptState] = useState<Script>(() => {
+    try {
+      const saved = window.localStorage.getItem("chordex.script");
+      if (saved === "native" || saved === "roman" || saved === "both") return saved;
+    } catch {
+      /* storage blocked */
+    }
+    return "roman";
+  });
+  const setScript = (s: Script) => {
+    setScriptState(s);
+    try {
+      window.localStorage.setItem("chordex.script", s);
+    } catch {
+      /* storage blocked */
+    }
+  };
+
+  const { data, error, refetch } = useQuery({
+    queryKey: ["job", jobId],
+    queryFn: () => getJobStatus(jobId),
+    enabled: jobId !== STATIC_JOB_ID && jobId !== "",
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status === "failed" || status === "cancelled") return false;
+      // S3: chords resolve first — keep polling in the background until the
+      // slow lyrics job also settles, then go quiet.
+      const lyrics = query.state.data?.result?.lyrics_status;
+      if (status === "done" && lyrics !== "pending" && lyrics !== "processing")
+        return false;
+      return 2000;
+    },
+    retry: (failureCount) => failureCount < 5,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10_000),
+  });
+
+  const isLoading =
+    !data || data.status === "queued" || data.status === "processing";
+  const failed = Boolean(error) || data?.status === "failed";
+  const cancelled = data?.status === "cancelled";
+  const [cancelling, setCancelling] = useState(false);
+
+  const handleCancel = async () => {
+    setCancelling(true);
+    try {
+      await cancelJob(jobId);
+      await refetch();
+    } catch {
+      /* next poll shows the truth */
+    } finally {
+      setCancelling(false);
+    }
+  };
+  const progressPct =
+    typeof data?.progress === "number"
+      ? Math.round(Math.min(Math.max(data.progress, 0), 1) * 100)
+      : null;
+
+  useEffect(() => {
+    if (!isLoading) return;
+    const t = setInterval(
+      () => setStatusLine((i) => (i + 1) % PROCESSING_LINES.length),
+      2600
+    );
+    return () => clearInterval(t);
+  }, [isLoading]);
+
+  // hoisted from the response so the memo deps stay exact
+  const resultChords = data?.result?.chords;
+  const resultKey = data?.result?.key;
+
+  // 1) optional user transpose on original chords
+  const transposedOriginal = useMemo(
+    () =>
+      resultChords ? transposeProgression(resultChords, semitones) : [],
+    [resultChords, semitones]
+  );
+
+  // 2) easy mode from transposed
+  const easy = useMemo(() => {
+    if (!transposedOriginal.length) return null;
+    const key = resultKey
+      ? transposeKeyLabel(resultKey, semitones)
+      : undefined;
+    return applyEasyMode(transposedOriginal, key);
+  }, [transposedOriginal, resultKey, semitones]);
+
+  const displayChords = easyMode && easy ? easy.chords : transposedOriginal;
+
+  const originalKey = resultKey;
+  const transposedKey = originalKey
+    ? transposeKeyLabel(originalKey, semitones)
+    : undefined;
+
+  const activeIndex = activeChordIndex(displayChords, playhead);
+
+  const handleCopy = async () => {
+    // With lyrics: ChordPro (chords inline on the exact syllable); without:
+    // the timestamped progression.
+    const sheet = data?.result?.sheet;
+    const hasLines = sheet?.rows.some((r) => r.kind === "line");
+    const header = easyMode
+      ? [`{comment: Easy mode · ${easy?.capo ? `Capo ${easy.capo}` : "No capo"}}`]
+      : [];
+    const full =
+      sheet && hasLines
+        ? sheetToChordPro(sheet, displayChords.map((c) => c.chord), header, script === "roman")
+        : formatProgression(displayChords, { easy: easyMode, capo: easy?.capo });
+    try {
+      await navigator.clipboard.writeText(full);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const seek = (ts: number) => {
+    setSeekTo(ts);
+    setTimeout(() => setSeekTo(null), 50);
+  };
+
+  const result = data?.result;
+  const durationLabel =
+    result?.duration != null
+      ? `${Math.floor(result.duration / 60)}:${Math.floor(result.duration % 60)
+          .toString()
+          .padStart(2, "0")}`
+      : "?";
+
+  const showResults = data?.status === "done" && Boolean(result);
+  const hasRoman = Boolean(
+    result?.sheet?.rows.some((r) => r.kind === "line" && r.words.some((w) => w.roman))
+  );
+  const togglePlay = () => playerRef.current?.toggle();
+
+  return (
+    <main className="min-h-screen p-4 sm:p-6 lg:py-0">
+      <div
+        className={
+          showResults
+            ? "max-w-[1480px] mx-auto pb-16 lg:pb-0"
+            : "max-w-3xl mx-auto pb-16"
+        }
+      >
+        {/* Header — on desktop results it lives at the top of the sidebar */}
+        <header
+          className={`flex items-center justify-between gap-4 mb-5 ${
+            showResults ? "lg:hidden" : ""
+          }`}
+        >
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2.5 min-h-11 bg-coal border-2 border-black shadow-hard-sm px-3.5 py-2 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
+          >
+            <Upload aria-hidden strokeWidth={2.5} className="w-5 h-5 text-mint" />
+            new song
+          </Link>
+          <Image
+            src="/logo.webp"
+            alt="Chordex"
+            width={140}
+            height={93}
+            className="w-28 sm:w-36 h-auto"
+          />
+        </header>
+
+        {/* Processing state */}
+        {isLoading && !failed && (
+          <div className="flex flex-col items-center justify-center py-24 gap-7 animate-pop">
+            <div className="flex items-end gap-2 h-16" aria-hidden>
+              {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+                <span
+                  key={i}
+                  className="w-3 bg-paper border-2 border-black animate-eq origin-bottom"
+                  style={{
+                    height: "100%",
+                    animationDelay: `${i * 0.14}s`,
+                  }}
+                />
+              ))}
+            </div>
+            <div className="text-center w-full max-w-md">
+              <p className="font-pixel text-paper text-xl sm:text-2xl tracking-wide">
+                {data?.status === "processing" ? "ANALYZING…" : "QUEUED…"}
+              </p>
+              <p className="font-cl text-paper-dim text-sm sm:text-base mt-2.5 animate-blink">
+                {data?.stage
+                  ? stageLabel(data.stage) + "…"
+                  : PROCESSING_LINES[statusLine]}
+              </p>
+
+              {progressPct !== null && (
+                <div className="mt-5">
+                  <div
+                    className="h-3 bg-soot border-2 border-black"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={progressPct}
+                  >
+                    <div
+                      className="h-full bg-mint transition-[width] duration-700"
+                      style={{ width: `${progressPct}%` }}
+                    />
+                  </div>
+                  <p className="font-pixel text-paper-dim text-xs mt-2.5">
+                    {progressPct}%
+                  </p>
+                </div>
+              )}
+
+              <p className="font-cl text-paper-dim/80 text-xs sm:text-sm mt-5">
+                {data?.stage === "downloading_model"
+                  ? "one-off download · later songs in this language start instantly"
+                  : "chords land in seconds · lyrics follow when ready (1–3 min with the small model, longer on a first-run language download)"}
+              </p>
+              {data?.status === "queued" &&
+                (data.queue_position != null || data.queue_depth != null) && (
+                  <p className="font-pixel text-gold text-xs sm:text-sm mt-3">
+                    #{data.queue_position ?? "?"} in line
+                    {data.queue_name
+                      ? ` · ${queueLabel(data.queue_name)} queue`
+                      : ""}
+                    {data.queue_depth != null && data.queue_depth > 1
+                      ? ` · ${data.queue_depth} waiting`
+                      : ""}
+                  </p>
+                )}
+              {(data?.status === "queued" ||
+                data?.status === "processing") && (
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  disabled={cancelling}
+                  className="mt-5 min-h-9 inline-flex items-center justify-center font-pixel text-xs px-4 py-2 bg-transparent text-paper-dim border-2 border-soot hover:text-paper hover:border-paper-dim disabled:opacity-50 transition-colors"
+                >
+                  {cancelling ? "CANCELLING…" : "CANCEL JOB"}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Failure state */}
+        {failed && (
+          <div
+            role="alert"
+            className="p-5 sm:p-6 bg-tomato border-2 border-black shadow-hard text-ink"
+          >
+            <p className="font-pixel text-lg sm:text-xl mb-2.5">
+              ANALYSIS FAILED
+            </p>
+            <p className="font-cl text-sm sm:text-base font-semibold mb-4">
+              {data?.error ??
+                (error instanceof Error
+                  ? error.message
+                  : "An unknown error occurred.")}
+            </p>
+            <Link
+              href="/"
+              className="inline-flex items-center gap-2 min-h-11 bg-ink text-paper border-2 border-black shadow-hard-sm px-3.5 py-2 font-pixel text-xs hover:-translate-y-0.5 transition-transform"
+            >
+              TRY ANOTHER FILE
+            </Link>
+          </div>
+        )}
+
+        {/* Cancelled state */}
+        {cancelled && !failed && (
+          <div
+            role="status"
+            className="p-5 sm:p-6 bg-coal border-2 border-black shadow-hard text-paper"
+          >
+            <p className="font-pixel text-lg sm:text-xl mb-2.5">
+              JOB CANCELLED
+            </p>
+            <p className="font-cl text-sm sm:text-base text-paper-dim mb-4">
+              This analysis was stopped. Upload again whenever ready.
+            </p>
+            <Link
+              href="/"
+              className="inline-flex items-center gap-2 min-h-11 bg-paper text-ink border-2 border-black shadow-hard-sm px-3.5 py-2 font-pixel text-xs hover:-translate-y-0.5 transition-transform"
+            >
+              ANALYZE ANOTHER FILE
+            </Link>
+          </div>
+        )}
+        {/* Results — desktop: sticky control panel left, sheet right.
+            Mobile: controls stacked, then a sticky now/next + play bar over
+            the sheet so playback stays in reach while reading. */}
+        {showResults && result && (
+          <div className="lg:grid lg:grid-cols-[minmax(340px,400px)_minmax(0,1fr)] lg:gap-8 xl:gap-12">
+            <aside
+              aria-label="Playback and chord controls"
+              className="space-y-4 lg:sticky lg:top-0 lg:h-screen lg:overflow-y-auto lg:py-6 lg:pr-3 lg:-mr-3 panel-scroll"
+            >
+              <div className="hidden lg:flex items-center justify-between gap-3">
+                <Link
+                  href="/"
+                  className="inline-flex items-center gap-2 min-h-10 bg-coal border-2 border-black shadow-hard-sm px-3 py-1.5 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
+                >
+                  <Upload aria-hidden strokeWidth={2.5} className="w-4 h-4 text-mint" />
+                  new song
+                </Link>
+                <Image src="/logo.webp" alt="Chordex" width={140} height={93} className="w-24 h-auto" />
+              </div>
+
+              {/* Song */}
+              <div>
+                {result.source_name && (
+                  <h1
+                    title={result.source_name}
+                    className="font-bold text-paper text-lg sm:text-xl lg:text-lg xl:text-xl tracking-tight leading-snug break-words line-clamp-2"
+                  >
+                    {result.source_name}
+                  </h1>
+                )}
+                <p className="font-cl text-paper-dim text-xs sm:text-sm mt-1.5 flex flex-wrap gap-x-2 gap-y-1">
+                  <span>{transposedKey ?? originalKey ?? "key ?"}</span>
+                  <span aria-hidden>·</span>
+                  <span>
+                    {result.tempo != null && result.tempo > 0
+                      ? `${Math.round(result.tempo)} bpm`
+                      : "— bpm"}
+                  </span>
+                  <span aria-hidden>·</span>
+                  <span>{durationLabel}</span>
+                  {result.lyrics_language && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span>
+                        {languageName(result.lyrics_language)}
+                        {result.lyrics_language_prob != null &&
+                          result.lyrics_language_prob < 0.5 &&
+                          " (guessed)"}
+                      </span>
+                    </>
+                  )}
+                </p>
+                <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                  {result.lyrics_source && result.lyrics_source !== "asr" && (
+                    <span className="inline-flex items-center bg-lime border-2 border-black px-2 py-0.5 font-cl text-ink text-[11px] uppercase tracking-wider">
+                      verified lyrics
+                    </span>
+                  )}
+                  {result.lyrics_source === "asr" &&
+                    (result.lyric_lines?.length ?? 0) > 0 && (
+                      <span className="inline-flex items-center border-2 border-soot px-2 py-0.5 font-cl text-paper-dim text-[11px] uppercase tracking-wider">
+                        machine-transcribed
+                      </span>
+                    )}
+                  {(result.lyrics_status === "pending" ||
+                    result.lyrics_status === "processing") && (
+                    <span className="font-cl text-gold text-xs animate-blink">
+                      lyrics still cooking
+                      {data?.stage ? ` — ${stageLabel(data.stage)}…` : "…"}
+                    </span>
+                  )}
+                </div>
+                {result.lyrics_language_prob != null &&
+                  result.lyrics_language_prob < 0.5 && (
+                    <p className="font-cl text-paper-dim/80 text-xs mt-2">
+                      Lyrics look wrong? Pick the language when you upload.
+                    </p>
+                  )}
+              </div>
+
+              <AudioPlayer
+                ref={playerRef}
+                src={audioUrl(jobId)}
+                chords={displayChords}
+                onTimeUpdate={setPlayhead}
+                onPlayingChange={setPlaying}
+                seekTo={seekTo}
+              />
+
+              <div className="hidden lg:block">
+                <NowNextBar
+                  chords={displayChords}
+                  activeIndex={activeIndex}
+                  currentTime={playhead}
+                  playing={playing}
+                  onSeek={seek}
+                  sticky={false}
+                  compact
+                />
+              </div>
+
+              {/* Chord controls */}
+              <div className="bg-coal border-2 border-black shadow-hard divide-y-2 divide-soot">
+                <div className="p-3.5 sm:p-4">
+                  <TransposeControl
+                    semitones={semitones}
+                    onChange={setSemitones}
+                    originalKey={originalKey}
+                    transposedKey={transposedKey}
+                  />
+                </div>
+                <div className="p-3.5 sm:p-4">
+                  <EasyModeControl
+                    enabled={easyMode}
+                    onChange={setEasyMode}
+                    capo={easy?.capo ?? result.easy?.capo ?? 0}
+                    reason={easy?.reason ?? result.easy?.reason}
+                    easyKey={easy?.easyKey ?? result.easy?.easy_key ?? undefined}
+                  />
+                </div>
+              </div>
+
+              <p className="hidden lg:block font-cl text-paper-dim/70 text-xs text-center pb-2">
+                auto-generated · {result.engine ? `chords via ${result.engine} · ` : ""}
+                trust your ear on complex tracks
+              </p>
+            </aside>
+
+            {/* The sheet */}
+            <section aria-label="Chord sheet" className="mt-5 lg:mt-0 lg:py-6 min-w-0 space-y-4">
+              {/* Sheet view controls live with the sheet */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                {hasRoman ? (
+                  <div className="flex items-center gap-3">
+                    <span className="font-cl text-paper-dim text-xs uppercase tracking-[0.2em]">
+                      Lyrics in
+                    </span>
+                    <div
+                      role="group"
+                      aria-label="Lyrics script"
+                      className="inline-flex border-2 border-black shadow-hard-sm"
+                    >
+                      {(["roman", "native", "both"] as const).map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setScript(s)}
+                          aria-pressed={script === s}
+                          className={`min-h-10 px-3 sm:px-3.5 py-2 font-pixel text-xs sm:text-sm border-r-2 border-black last:border-r-0 transition-colors ${
+                            script === s
+                              ? "bg-gold text-ink"
+                              : "bg-coal text-paper-dim hover:text-paper"
+                          }`}
+                        >
+                          {s === "native" ? "ORIGINAL" : s === "roman" ? "ENGLISH" : "BOTH"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <span />
+                )}
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  title="Copy as ChordPro text (chords inline on their syllables)"
+                  className="min-h-10 inline-flex items-center justify-center gap-2 font-pixel text-xs sm:text-sm px-4 py-2 bg-paper text-ink border-2 border-black shadow-hard-sm hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-transform"
+                >
+                  <Copy aria-hidden strokeWidth={2.5} className="w-4 h-4" />
+                  {copied ? "COPIED!" : "COPY SHEET"}
+                </button>
+              </div>
+              {/* the wrapper is the sticky element: a sticky child can't
+                  outlive a parent that only wraps it */}
+              <div className="lg:hidden sticky top-0 z-20 -mx-1 px-1 pt-3 pb-2 bg-ink shadow-hard">
+                <NowNextBar
+                  chords={displayChords}
+                  activeIndex={activeIndex}
+                  currentTime={playhead}
+                  playing={playing}
+                  onSeek={seek}
+                  onTogglePlay={togglePlay}
+                  sticky={false}
+                />
+              </div>
+              <ChordSheet
+                chords={displayChords}
+                sheet={result.sheet}
+                hasLyrics={Boolean(result.lyrics?.length || result.lyric_lines?.length)}
+                script={script}
+                currentTime={playhead}
+                activeChord={activeIndex}
+                lyricsError={result.lyrics_error}
+                onSeek={seek}
+              />
+              <p className="lg:hidden font-cl text-paper-dim text-xs sm:text-sm text-center pt-1 pb-2">
+                auto-generated — always trust your ear on complex tracks
+              </p>
+            </section>
+          </div>
+        )}
+      </div>
+    </main>
+  );
+}
