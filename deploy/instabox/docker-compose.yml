@@ -1,0 +1,115 @@
+# Production backend on an InstaBox machine (CPU only, 4 vCPU / 8 GB).
+# Local development is unaffected: keep using ./start.sh on your machine.
+#
+#   cd deploy/instabox
+#   cp .env.example .env        # set ALLOWED_ORIGINS to the Vercel URL
+#   docker compose up -d --build
+#   instabox-port publish 8000 --name 'Chordex API'
+#
+# Everything restarts on its own after the machine reboots or resumes fresh.
+
+x-backend-env: &backend-env
+  REDIS_URL: redis://redis:6379
+  UPLOAD_DIR: /data/uploads
+  CHORD_ENGINE: auto
+  ENABLE_LYRICS: "1"
+  WHISPER_MODEL: small
+  WHISPER_DEVICE: cpu
+  WHISPER_COMPUTE_TYPE: int8
+  LYRICS_DEVICE: cpu
+  LYRICS_SEPARATION_BACKEND: demucs
+  # ~15-20% faster separation on CPU (demucs default 0.25)
+  LYRICS_DEMUCS_OVERLAP: "0.1"
+  LYRICS_LRCLIB: "1"
+  LYRICS_ALIGNMENT: "1"
+  # "1" = int8 aligner: ~5x faster alignment, but ~1 in 6 words lands
+  # >100 ms differently. Try it by ear before leaving it on.
+  LYRICS_ALIGN_INT8: "0"
+  LYRICS_LLM_CLEANUP: "0"
+  LYRICS_CACHE_DIR: /data/lyrics_cache
+  # CTranslate2 conversions of the HF fine-tunes (made by prewarm.py)
+  LYRICS_CT2_DIR: /data/ct2
+  MAX_FILE_SIZE_MB: "20"
+  JOB_TIMEOUT_S: "7200"
+  # hf-xet stalls on some networks; see backend/pipeline/hf_setup.py
+  HF_HUB_DISABLE_XET: "1"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  api:
+    build: ../../backend
+    image: chordex-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *backend-env
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      - redis
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+  # Chords get their own small worker (no ML models, ~0.5 GB) so a song's
+  # chords never wait behind someone else's minutes-long lyrics job. Lyrics
+  # stay on one worker: the models need ~2 GB and the 4 vCPUs are already
+  # saturated by one lyrics job.
+  chord-worker:
+    image: chordex-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *backend-env
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      - redis
+      - api
+    command: python worker.py chord_jobs
+
+  worker:
+    image: chordex-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *backend-env
+    volumes:
+      - uploads:/data/uploads
+      - lyrics_cache:/data/lyrics_cache
+      - hf_cache:/root/.cache/huggingface
+      - torch_cache:/root/.cache/torch
+      - ct2_models:/data/ct2
+    depends_on:
+      - redis
+      - api
+    command: python worker.py lyrics_jobs
+
+  # Results expire from Redis after an hour, but uploaded audio stays on
+  # disk: delete it after two hours. Separated vocal stems (the repeat-song
+  # cache, ~10 MB per song) go after a week, so the 20 GB disk doesn't fill.
+  cleanup:
+    image: alpine:3.20
+    restart: unless-stopped
+    volumes:
+      - uploads:/data/uploads
+      - lyrics_cache:/data/lyrics_cache
+    command: >
+      sh -c 'while true; do
+        find /data/uploads -type f -mmin +120 -delete;
+        find /data/lyrics_cache -type f -mtime +7 -delete;
+        sleep 1800;
+      done'
+
+volumes:
+  uploads:
+  lyrics_cache:
+  hf_cache:
+  torch_cache:
+  ct2_models:
+  redis_data:

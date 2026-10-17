@@ -180,21 +180,32 @@ def _get_model(cfg: LyricsConfig):
     # Cached on CPU; compute_emissions moves it to the GPU only while it runs
     # (1.2 GB of weights must not sit next to Whisper on a 4 GB card).
     model = bundle.get_model(with_star=False).eval()
+    if cfg.align_int8 and device == "cpu":
+        model = torch.ao.quantization.quantize_dynamic(model, {torch.nn.Linear},
+                                                       dtype=torch.qint8)
+        logger.info("MMS_FA aligner quantised to int8 (LYRICS_ALIGN_INT8)")
     vocab = bundle.get_dict(star=None)
     _model_cache["mms_fa"] = (model, vocab, device, torch)
     return _model_cache["mms_fa"]
 
 
 def compute_emissions(y: np.ndarray, cfg: LyricsConfig, window_s: float = 15.0,
-                      context_s: float = 2.0) -> tuple[np.ndarray, dict[str, int]]:
+                      context_s: float = 2.0,
+                      spans: list[tuple[float, float]] | None = None,
+                      ) -> tuple[np.ndarray, dict[str, int]]:
     """(T, C) float32 log-probs at 50 fps for the whole stem.
 
     15 s windows keep peak activation memory well under 1 GB, so the model
-    fits next to Whisper on a 4 GB card that also drives the desktop."""
+    fits next to Whisper on a 4 GB card that also drives the desktop.
+
+    ``spans`` (seconds) limits the model to those stretches — the lyric line
+    windows — and fills the rest with certain-blank frames, which no line
+    window reads. Intros, solos and outros then cost nothing (the model pass
+    is ~all of alignment time on CPU)."""
     model, vocab, device, torch = _get_model(cfg)
     win, ctx = int(window_s * SR), int(context_s * SR)
     dtype = next(model.parameters()).dtype
-    chunks: list[np.ndarray] = []
+    parts = _merge_spans(spans, len(y) / SR) if spans else None
     try:
         model.to(device)
     except RuntimeError as exc:  # no VRAM left → align on CPU this time
@@ -202,12 +213,46 @@ def compute_emissions(y: np.ndarray, cfg: LyricsConfig, window_s: float = 15.0,
         device = "cpu"
         model.to(device)
     try:
-        _emit(model, y, win, ctx, device, dtype, torch, chunks)
+        if parts is None:
+            chunks: list[np.ndarray] = []
+            _emit(model, y, win, ctx, device, dtype, torch, chunks)
+            return (np.concatenate(chunks) if chunks
+                    else np.zeros((0, len(vocab)))), vocab
+        T = int(round(len(y) * FPS / SR))
+        em = np.full((T, len(vocab)), -1e4, dtype=np.float32)
+        em[:, vocab.get("-", 0)] = 0.0
+        for a, b in parts:
+            chunks = []
+            _emit(model, y[int(a * SR):int(b * SR)], win, ctx, device, dtype, torch, chunks)
+            if chunks:
+                seg = np.concatenate(chunks)
+                f0 = int(round(a * FPS))
+                n = min(len(seg), T - f0)
+                em[f0:f0 + n] = seg[:n]
+        return em, vocab
     finally:
         if device != "cpu":
             model.to("cpu")
             torch.cuda.empty_cache()
-    return np.concatenate(chunks) if chunks else np.zeros((0, len(vocab))), vocab
+
+
+def _merge_spans(spans: list[tuple[float, float]], total_s: float,
+                 pad_s: float = 3.0, max_cover: float = 0.85
+                 ) -> list[tuple[float, float]] | None:
+    """Padded, merged, clipped spans — or None when they cover most of the
+    song anyway (a single full pass is then just as fast)."""
+    merged: list[list[float]] = []
+    for a, b in sorted(spans):
+        a, b = max(0.0, a - pad_s), min(total_s, b + pad_s)
+        if b <= a:
+            continue
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    if not merged or sum(b - a for a, b in merged) > max_cover * total_s:
+        return None
+    return [(a, b) for a, b in merged]
 
 
 def _emit(model, y, win, ctx, device, dtype, torch, chunks) -> None:
@@ -362,7 +407,11 @@ def align(
         from pipeline.asr import load_stem
 
         y = audio if audio is not None else load_stem(vocal_stem_path)
-        em, vocab = compute_emissions(y, cfg)
+        # Only the line windows are ever read (plus the 1.5 s retry widening,
+        # which _merge_spans' padding covers); an untimed whole-song window
+        # needs the full pass.
+        spans = None if any(we == float("inf") for _, we in windows) else windows
+        em, vocab = compute_emissions(y, cfg, spans=spans)
         total_s = em.shape[0] / FPS
         romans = [_romanise(w["word"], lang3, vocab) for w in native]
 

@@ -1,0 +1,4 @@
+# Local-only env (localhost API URL, Vercel OIDC token): production values
+# come from the Vercel project's environment variables.
+.env*.local
+tsconfig.tsbuildinfo

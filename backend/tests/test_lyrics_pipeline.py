@@ -389,7 +389,7 @@ def test_alignment_timebase_with_synthetic_emissions(tmp_path, monkeypatch):
     for f, c in [(20, 1), (25, 2), (50, 3), (55, 4)]:  # "ab" @0.4 s, "cd" @1.0 s
         lp[f, :] = np.log(0.025)
         lp[f, c] = np.log(0.9)
-    monkeypatch.setattr(alignment, "compute_emissions", lambda y, cfg: (lp, vocab))
+    monkeypatch.setattr(alignment, "compute_emissions", lambda y, cfg, **kw: (lp, vocab))
     monkeypatch.setattr(alignment, "_romanise",
                         lambda w, l, v: {"ഹലോ": "ab", "ലോകം": "cd"}[w])
     lines = [{"timestamp": 0.2, "end": 1.8, "text": "ഹലോ ലോകം"}]
@@ -414,7 +414,7 @@ def test_alignment_untrusted_line_keeps_rough_timing(tmp_path, monkeypatch):
 
     vocab = {"-": 0, "a": 1, "b": 2, **{f"z{i}": i + 3 for i in range(25)}}  # 28 classes
     monkeypatch.setattr(alignment, "compute_emissions",
-                        lambda y, cfg: (np.full((100, 28), np.log(1 / 28)), vocab))
+                        lambda y, cfg, **kw: (np.full((100, 28), np.log(1 / 28)), vocab))
     monkeypatch.setattr(alignment, "_romanise", lambda w, l, v: "ab")
     words = [{"word": "x", "timestamp": 0.3, "end": 0.6},
              {"word": "y", "timestamp": 0.9, "end": 1.2}]

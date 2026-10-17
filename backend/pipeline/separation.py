@@ -89,16 +89,17 @@ def _to_16k_mono(src: Path, dst: Path) -> Path:
 _separators: dict[tuple[str, str], object] = {}
 
 
-def _get_separator(model: str, device: str):
+def _get_separator(model: str, device: str, overlap: float = 0.25):
     """Demucs Separator (CPU instances stay cached; GPU ones are released
     after each run — see _run_demucs)."""
-    key = (model, device)
+    key = (model, device, overlap)
     if key not in _separators:
         from demucs.api import Separator
 
         logger.info("loading demucs model=%s device=%s", model, device)
         # segment/split keep VRAM bounded (htdemucs fits a 4 GB GTX 1650)
-        _separators[key] = Separator(model=model, device=device, progress=False)
+        _separators[key] = Separator(model=model, device=device, overlap=overlap,
+                                     progress=False)
     return _separators[key]
 
 
@@ -110,15 +111,15 @@ def _run_demucs(audio_path: Path, cfg: LyricsConfig) -> tuple[dict, int]:
     """
     device = cfg.torch_device()
     try:
-        sep = _get_separator(cfg.demucs_model, device)
+        sep = _get_separator(cfg.demucs_model, device, cfg.demucs_overlap)
         _, stems = sep.separate_audio_file(str(audio_path))
     except RuntimeError as exc:  # torch.cuda.OutOfMemoryError subclasses it
         if device == "cpu":
             raise
         logger.warning("demucs on %s failed (%s) — retrying on cpu", device, exc)
-        _separators.pop((cfg.demucs_model, device), None)
+        _separators.pop((cfg.demucs_model, device, cfg.demucs_overlap), None)
         _free_cuda()
-        sep = _get_separator(cfg.demucs_model, "cpu")
+        sep = _get_separator(cfg.demucs_model, "cpu", cfg.demucs_overlap)
         _, stems = sep.separate_audio_file(str(audio_path))
     out = {k: v.cpu() for k, v in stems.items()}
     samplerate = sep.samplerate
@@ -126,7 +127,7 @@ def _run_demucs(audio_path: Path, cfg: LyricsConfig) -> tuple[dict, int]:
     if device != "cpu":
         # Don't park demucs on a 4 GB card between jobs: Whisper and the
         # aligner need the VRAM next. Reloading from disk costs ~1 s.
-        _separators.pop((cfg.demucs_model, device), None)
+        _separators.pop((cfg.demucs_model, device, cfg.demucs_overlap), None)
         del sep
     _free_cuda()
     return out, samplerate
