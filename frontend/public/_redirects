@@ -1,2 +1,0 @@
-# Cloudflare Pages: every job id is served by the one exported results page.
-/results/*  /results/_  200

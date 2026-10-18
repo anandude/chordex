@@ -97,7 +97,7 @@ if [[ "$DOCKER" -eq 1 ]]; then
   docker compose up --build -d
   ok "API:      http://localhost:8000"
   ok "Health:   http://localhost:8000/health"
-  warn "Frontend is not in compose — run: cd frontend && npm run dev"
+  warn "Frontend is not in compose — run: npm run dev (at the repo root)"
   warn "Or use:  ./start.sh   (hybrid mode with frontend)"
   echo
   echo "Logs: docker compose logs -f"
@@ -131,17 +131,16 @@ ensure_backend() {
 }
 
 ensure_frontend() {
-  if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
+  if [[ ! -d "$ROOT/node_modules" ]]; then
     info "Installing frontend dependencies…"
-    (cd "$ROOT/frontend" && npm install)
+    npm --prefix "$ROOT" install
   fi
-  if [[ ! -f "$ROOT/frontend/.env.local" ]]; then
-    cp "$ROOT/frontend/.env.example" "$ROOT/frontend/.env.local"
-    ok "Created frontend/.env.local from example"
+  if [[ ! -f "$ROOT/.env.local" ]]; then
+    cp "$ROOT/.env.local.example" "$ROOT/.env.local" 2>/dev/null || true
   fi
 }
 
-if [[ "$SETUP" -eq 1 ]] || [[ ! -x "$ROOT/backend/.venv/bin/python" ]] || [[ ! -d "$ROOT/frontend/node_modules" ]]; then
+if [[ "$SETUP" -eq 1 ]] || [[ ! -x "$ROOT/backend/.venv/bin/python" ]] || [[ ! -d "$ROOT/node_modules" ]]; then
   info "Running setup…"
   ensure_backend
   ensure_frontend
@@ -259,7 +258,7 @@ echo $! > "$PID_DIR/worker-lyrics.pid"
 
 info "Starting frontend (port 3000)…"
 (
-  cd "$ROOT/frontend"
+  cd "$ROOT"
   exec npm run dev -- --port 3000
 ) >"$LOG_DIR/frontend.log" 2>&1 &
 echo $! > "$PID_DIR/frontend.pid"
