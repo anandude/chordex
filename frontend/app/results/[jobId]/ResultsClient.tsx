@@ -262,10 +262,10 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
           }`}
         >
           <Link
-            href="/"
-            className="inline-flex items-center gap-2.5 min-h-11 bg-coal border-2 border-black shadow-hard-sm px-3.5 py-2 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
+            href="/upload"
+            className="inline-flex items-center gap-2 min-h-11 bg-ink text-paper border border-white/10 shadow-hard-sm rounded-full px-3.5 py-2 font-display text-xs hover:-translate-y-0.5 transition-transform"
           >
-            <Upload aria-hidden strokeWidth={2.5} className="w-5 h-5 text-mint" />
+            <Upload aria-hidden strokeWidth={2.5} className="w-5 h-5 text-viol" />
             new song
           </Link>
           <Image
@@ -284,7 +284,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
               {[0, 1, 2, 3, 4, 5, 6].map((i) => (
                 <span
                   key={i}
-                  className="w-3 bg-paper border-2 border-black animate-eq origin-bottom"
+                  className="w-3 bg-gold animate-eq origin-bottom"
                   style={{
                     height: "100%",
                     animationDelay: `${i * 0.14}s`,
@@ -293,7 +293,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
               ))}
             </div>
             <div className="text-center w-full max-w-md">
-              <p className="font-pixel text-paper text-xl sm:text-2xl tracking-wide">
+              <p className="font-display text-paper text-xl sm:text-2xl tracking-wide">
                 {data?.status === "processing" ? "ANALYZING…" : "QUEUED…"}
               </p>
               <p className="font-cl text-paper-dim text-sm sm:text-base mt-2.5 animate-blink">
@@ -305,7 +305,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
               {progressPct !== null && (
                 <div className="mt-5">
                   <div
-                    className="h-3 bg-soot border-2 border-black"
+                    className="h-3 bg-soot border border-white/10"
                     role="progressbar"
                     aria-valuemin={0}
                     aria-valuemax={100}
@@ -316,7 +316,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
                       style={{ width: `${progressPct}%` }}
                     />
                   </div>
-                  <p className="font-pixel text-paper-dim text-xs mt-2.5">
+                  <p className="font-display text-paper-dim text-xs mt-2.5">
                     {progressPct}%
                   </p>
                 </div>
@@ -329,7 +329,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
               </p>
               {data?.status === "queued" &&
                 (data.queue_position != null || data.queue_depth != null) && (
-                  <p className="font-pixel text-gold text-xs sm:text-sm mt-3">
+                  <p className="font-display text-gold text-xs sm:text-sm mt-3">
                     #{data.queue_position ?? "?"} in line
                     {data.queue_name
                       ? ` · ${queueLabel(data.queue_name)} queue`
@@ -345,7 +345,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
                   type="button"
                   onClick={handleCancel}
                   disabled={cancelling}
-                  className="mt-5 min-h-9 inline-flex items-center justify-center font-pixel text-xs px-4 py-2 bg-transparent text-paper-dim border-2 border-soot hover:text-paper hover:border-paper-dim disabled:opacity-50 transition-colors"
+                  className="mt-5 min-h-9 inline-flex items-center justify-center font-display text-xs px-4 py-2 bg-transparent text-paper-dim border border-white/10 hover:text-paper hover:border-paper-dim disabled:opacity-50 transition-colors rounded-full"
                 >
                   {cancelling ? "CANCELLING…" : "CANCEL JOB"}
                 </button>
@@ -358,9 +358,9 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
         {failed && (
           <div
             role="alert"
-            className="p-5 sm:p-6 bg-tomato border-2 border-black shadow-hard text-ink"
+            className="p-5 sm:p-6 bg-tomato/15 border border-tomato/50 shadow-hard rounded-2xl text-tomato"
           >
-            <p className="font-pixel text-lg sm:text-xl mb-2.5">
+            <p className="font-display text-lg sm:text-xl mb-2.5">
               ANALYSIS FAILED
             </p>
             <p className="font-cl text-sm sm:text-base font-semibold mb-4">
@@ -370,8 +370,8 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
                   : "An unknown error occurred.")}
             </p>
             <Link
-              href="/"
-              className="inline-flex items-center gap-2 min-h-11 bg-ink text-paper border-2 border-black shadow-hard-sm px-3.5 py-2 font-pixel text-xs hover:-translate-y-0.5 transition-transform"
+              href="/upload"
+              className="inline-flex items-center gap-2 min-h-11 bg-ink text-paper border border-white/10 shadow-hard-sm rounded-full px-3.5 py-2 font-display text-xs hover:-translate-y-0.5 transition-transform"
             >
               TRY ANOTHER FILE
             </Link>
@@ -382,17 +382,17 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
         {cancelled && !failed && (
           <div
             role="status"
-            className="p-5 sm:p-6 bg-coal border-2 border-black shadow-hard text-paper"
+            className="p-5 sm:p-6 bg-coal border border-white/10 shadow-hard rounded-2xl text-paper"
           >
-            <p className="font-pixel text-lg sm:text-xl mb-2.5">
+            <p className="font-display text-lg sm:text-xl mb-2.5">
               JOB CANCELLED
             </p>
             <p className="font-cl text-sm sm:text-base text-paper-dim mb-4">
               This analysis was stopped. Upload again whenever ready.
             </p>
             <Link
-              href="/"
-              className="inline-flex items-center gap-2 min-h-11 bg-paper text-ink border-2 border-black shadow-hard-sm px-3.5 py-2 font-pixel text-xs hover:-translate-y-0.5 transition-transform"
+              href="/upload"
+              className="inline-flex items-center gap-2 min-h-11 bg-paper text-ink border border-black/5 shadow-hard-sm rounded-full px-3.5 py-2 font-display text-xs hover:-translate-y-0.5 transition-transform"
             >
               ANALYZE ANOTHER FILE
             </Link>
@@ -409,10 +409,10 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
             >
               <div className="hidden lg:flex items-center justify-between gap-3">
                 <Link
-                  href="/"
-                  className="inline-flex items-center gap-2 min-h-10 bg-coal border-2 border-black shadow-hard-sm px-3 py-1.5 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
+                  href="/upload"
+                  className="inline-flex items-center gap-2 min-h-10 bg-coal border border-white/10 shadow-hard-sm rounded-full px-3 py-1.5 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
                 >
-                  <Upload aria-hidden strokeWidth={2.5} className="w-4 h-4 text-mint" />
+                  <Upload aria-hidden strokeWidth={2.5} className="w-4 h-4 text-viol" />
                   new song
                 </Link>
                 <Image src="/logo.webp" alt="Chordex" width={140} height={93} className="w-24 h-auto" />
@@ -452,7 +452,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
                 </p>
                 <div className="flex flex-wrap items-center gap-2 mt-2.5">
                   {result.lyrics_source && result.lyrics_source !== "asr" && (
-                    <span className="inline-flex items-center bg-lime border-2 border-black px-2 py-0.5 font-cl text-ink text-[11px] uppercase tracking-wider">
+                    <span className="inline-flex items-center bg-lime/90 shadow-hard-sm rounded-full px-2.5 py-0.5 font-cl text-ink text-[11px] uppercase tracking-wider">
                       verified lyrics
                     </span>
                   )}
@@ -500,7 +500,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
               </div>
 
               {/* Chord controls */}
-              <div className="bg-coal border-2 border-black shadow-hard divide-y-2 divide-soot">
+              <div className="bg-coal border border-white/10 shadow-hard rounded-2xl divide-y divide-white/10">
                 <div className="p-3.5 sm:p-4">
                   <TransposeControl
                     semitones={semitones}
@@ -538,7 +538,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
                     <div
                       role="group"
                       aria-label="Lyrics script"
-                      className="inline-flex border-2 border-black shadow-hard-sm"
+                      className="inline-flex border border-white/10 shadow-hard-sm rounded-full overflow-hidden"
                     >
                       {(["roman", "native", "both"] as const).map((s) => (
                         <button
@@ -546,9 +546,9 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
                           type="button"
                           onClick={() => setScript(s)}
                           aria-pressed={script === s}
-                          className={`min-h-10 px-3 sm:px-3.5 py-2 font-pixel text-xs sm:text-sm border-r-2 border-black last:border-r-0 transition-colors ${
+                          className={`min-h-10 px-3 sm:px-3.5 py-2 font-display text-xs sm:text-sm border-r border-white/10 last:border-r-0 transition-colors ${
                             script === s
-                              ? "bg-gold text-ink"
+                              ? "bg-gold text-white"
                               : "bg-coal text-paper-dim hover:text-paper"
                           }`}
                         >
@@ -564,7 +564,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
                   type="button"
                   onClick={handleCopy}
                   title="Copy as ChordPro text (chords inline on their syllables)"
-                  className="min-h-10 inline-flex items-center justify-center gap-2 font-pixel text-xs sm:text-sm px-4 py-2 bg-paper text-ink border-2 border-black shadow-hard-sm hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-transform"
+                  className="min-h-10 inline-flex items-center justify-center gap-2 font-display text-xs sm:text-sm px-4 py-2 bg-paper text-ink border border-black/5 shadow-hard-sm rounded-full hover:-translate-y-px active:opacity-80 transition-all"
                 >
                   <Copy aria-hidden strokeWidth={2.5} className="w-4 h-4" />
                   {copied ? "COPIED!" : "COPY SHEET"}

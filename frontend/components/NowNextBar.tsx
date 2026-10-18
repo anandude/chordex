@@ -78,7 +78,7 @@ export default function NowNextBar({
             type="button"
             onClick={onTogglePlay}
             aria-label={playing ? "Pause" : "Play"}
-            className="self-center w-12 h-12 rounded-full bg-lime border-2 border-black shadow-hard-sm flex items-center justify-center active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-transform"
+            className="self-center w-12 h-12 rounded-full bg-lime shadow-hard-sm flex items-center justify-center active:opacity-70 transition-opacity"
           >
             {playing ? (
               <Pause aria-hidden fill="currentColor" className="w-5 h-5 text-ink" />
@@ -93,22 +93,22 @@ export default function NowNextBar({
           onClick={() => onSeek?.(nowStart)}
           aria-label={`Current chord ${chordLabel(now.chord)}. Restart it.`}
           className={[
-            `text-left border-2 border-black ${pad} transition-all`,
+            `text-left border border-transparent rounded-xl ${pad} transition-all`,
             nowActive
-              ? "bg-gold text-ink shadow-hard"
+              ? "bg-gold text-white shadow-hard-gold"
               : "bg-paper text-ink shadow-hard-sm hover:-translate-y-0.5",
           ].join(" ")}
         >
           <p
-            className={`font-cl text-[11px] sm:text-xs uppercase tracking-[0.2em] mb-1 ${
-              nowActive ? "text-ink/70" : "text-ink/60"
+            className={`font-display text-[11px] sm:text-xs uppercase tracking-[0.2em] mb-1 ${
+              nowActive ? "text-white/80" : "text-ink/55"
             }`}
           >
             {hasActive ? (nowActive ? "▶ Now" : "Now") : "Up first"}
           </p>
           <p
             aria-live="polite"
-            className={`font-pixel leading-none ${
+            className={`font-display leading-none ${
               compact
                 ? now.chord.length > 5 ? "text-3xl" : "text-4xl"
                 : now.chord.length > 5 ? "text-3xl sm:text-5xl" : "text-4xl sm:text-6xl"
@@ -122,7 +122,7 @@ export default function NowNextBar({
               <span
                 key={i}
                 className={`h-1.5 flex-1 border border-black/70 ${
-                  i < filled ? (nowActive ? "bg-ink" : "bg-ink/70") : "bg-ink/15"
+                  i < filled ? (nowActive ? "bg-white" : "bg-ink/70") : "bg-ink/10"
                 }`}
               />
             ))}
@@ -132,7 +132,7 @@ export default function NowNextBar({
         {/* Arrow */}
         <div className="flex items-center self-center" aria-hidden>
           <span
-            className={`font-pixel text-2xl sm:text-3xl ${
+            className={`font-display text-2xl sm:text-3xl ${
               next ? "text-paper" : "text-transparent"
             }`}
           >
@@ -146,13 +146,13 @@ export default function NowNextBar({
             type="button"
             onClick={() => onSeek?.(next.timestamp)}
             aria-label={`Next chord ${chordLabel(next.chord)}. Jump to it.`}
-            className={`text-right border-2 border-black bg-coal ${pad} text-paper shadow-hard-sm hover:-translate-y-0.5 transition-all`}
+            className={`text-right border border-transparent bg-coal rounded-xl ${pad} text-paper shadow-hard-sm hover:-translate-y-0.5 transition-all`}
           >
             <p className="font-cl text-[11px] sm:text-xs uppercase tracking-[0.2em] text-paper-dim mb-1">
               Next
             </p>
             <p
-              className={`font-pixel leading-none ${
+              className={`font-display leading-none ${
                 compact
                   ? next.chord.length > 5 ? "text-2xl" : "text-3xl"
                   : next.chord.length > 5 ? "text-2xl sm:text-4xl" : "text-3xl sm:text-5xl"
@@ -160,21 +160,21 @@ export default function NowNextBar({
             >
               {chordLabel(next.chord)}
             </p>
-            <p className="font-pixel text-xs sm:text-sm text-paper-dim mt-2">
+            <p className="font-display text-xs sm:text-sm text-paper-dim mt-2">
               {nextIn != null && nextIn > 0.05 && nextIn <= 5
                 ? `IN ${nextIn.toFixed(1)}S`
                 : "\u00A0"}
             </p>
           </button>
         ) : (
-          <div className={`text-right border-2 border-black bg-coal ${pad} text-paper shadow-hard-sm`}>
+          <div className={`text-right border border-transparent bg-coal rounded-xl ${pad} text-paper shadow-hard-sm`}>
             <p className="font-cl text-[11px] sm:text-xs uppercase tracking-[0.2em] text-paper-dim mb-1">
               Next
             </p>
-            <p className={`font-pixel leading-none text-paper-dim/70 ${compact ? "text-3xl" : "text-3xl sm:text-5xl"}`}>
+            <p className={`font-display leading-none text-paper-dim/70 ${compact ? "text-3xl" : "text-3xl sm:text-5xl"}`}>
               —
             </p>
-            <p className="text-xs sm:text-sm mt-2 font-pixel text-transparent">
+            <p className="text-xs sm:text-sm mt-2 font-display text-transparent">
               {"\u00A0"}
             </p>
           </div>

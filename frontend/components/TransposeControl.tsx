@@ -22,7 +22,7 @@ export default function TransposeControl({
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2.5">
         <div className="flex items-baseline gap-2">
-          <span className="font-pixel text-paper text-base sm:text-lg">
+          <span className="font-display text-paper text-base sm:text-lg">
             {keyLabel}
           </span>
           {semitones !== 0 && originalKey && (
@@ -38,12 +38,12 @@ export default function TransposeControl({
             onClick={() => onChange(Math.max(-11, semitones - 1))}
             disabled={semitones <= -11}
             aria-label="Transpose down one semitone"
-            className="w-11 h-11 flex items-center justify-center bg-paper text-ink border-2 border-black shadow-hard-sm font-sans font-bold text-2xl leading-none hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:translate-y-0 transition-transform"
+            className="w-11 h-11 flex items-center justify-center bg-paper text-ink border border-black/5 shadow-hard-sm rounded-full font-sans font-bold text-2xl leading-none hover:-translate-y-px active:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
           >
             −
           </button>
           <span
-            className="font-pixel text-base text-center w-16 h-11 flex items-center justify-center bg-ink border-2 border-soot select-none"
+            className="font-display text-base text-center w-16 h-11 flex items-center justify-center bg-ink border border-white/10 select-none"
             aria-live="polite"
             aria-label={`Transpose ${semitones} semitones`}
           >
@@ -54,7 +54,7 @@ export default function TransposeControl({
             onClick={() => onChange(Math.min(11, semitones + 1))}
             disabled={semitones >= 11}
             aria-label="Transpose up one semitone"
-            className="w-11 h-11 flex items-center justify-center bg-paper text-ink border-2 border-black shadow-hard-sm font-sans font-bold text-2xl leading-none hover:-translate-y-px active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:translate-y-0 transition-transform"
+            className="w-11 h-11 flex items-center justify-center bg-paper text-ink border border-black/5 shadow-hard-sm rounded-full font-sans font-bold text-2xl leading-none hover:-translate-y-px active:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
           >
             +
           </button>

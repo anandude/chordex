@@ -52,12 +52,12 @@ function ChordChip({
         onClick?.();
       }}
       className={[
-        "font-pixel border-2 border-black whitespace-nowrap transition-transform hover:-translate-y-0.5",
+        "font-display border whitespace-nowrap transition-transform hover:-translate-y-0.5",
         size === "sm"
-          ? "text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1 leading-tight"
-          : "text-sm sm:text-base px-2.5 sm:px-3 py-1",
-        active ? "bg-ink text-gold shadow-hard-sm" : chordChipClass(chord),
-        faint && !active ? "opacity-45 border-dashed" : "",
+          ? "text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1 leading-tight rounded-md"
+          : "text-sm sm:text-base px-2.5 sm:px-3 py-1 rounded-lg",
+        active ? "bg-gold text-white shadow-hard-sm" : chordChipClass(chord),
+        faint && !active ? "opacity-45 border-dashed" : "border-transparent",
       ].join(" ")}
     >
       {chord}
@@ -148,7 +148,7 @@ export default function ChordSheet({
                   <span className="flex items-baseline">
                     <span
                       className={`${textCls} ${
-                        wordActive ? "bg-gold text-ink" : ""
+                wordActive ? "bg-gold text-white" : ""
                       }`}
                     >
                       {romans ? romans[si] : s.text}
@@ -178,7 +178,7 @@ export default function ChordSheet({
   };
 
   return (
-    <section className="bg-paper text-ink border-2 border-black shadow-hard px-4 py-6 sm:px-8 sm:py-8">
+    <section className="bg-paper text-ink border border-black/5 shadow-hard rounded-2xl px-4 py-6 sm:px-8 sm:py-8">
       {rows.map((row, i) => {
         const active = i === activeRow;
         const rowTone = active ? "bg-ink text-paper" : "hover:bg-ink/[0.04]";
@@ -187,7 +187,7 @@ export default function ChordSheet({
           return (
             <p
               key={i}
-              className="font-pixel text-ink/55 text-[11px] sm:text-xs tracking-[0.3em] text-center mt-8 mb-4 select-none first:mt-0"
+              className="font-display text-ink/55 text-[11px] sm:text-xs tracking-[0.3em] text-center mt-8 mb-4 select-none first:mt-0"
             >
               — {row.label} —
             </p>

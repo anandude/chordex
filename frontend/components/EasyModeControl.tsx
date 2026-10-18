@@ -26,7 +26,7 @@ export default function EasyModeControl({
           aria-checked={enabled}
           onClick={() => onChange(!enabled)}
           className={[
-            "min-h-11 font-pixel text-sm px-4 py-2.5 border-2 border-black transition-all",
+            "min-h-11 font-display text-sm px-4 py-2.5 transition-all rounded-full",
             enabled
               ? "bg-lime text-ink shadow-hard-sm"
               : "bg-ink/60 text-paper-dim shadow-hard-sm hover:text-paper",
@@ -38,8 +38,8 @@ export default function EasyModeControl({
         {enabled ? (
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
             <span
-              className={`font-pixel text-xs px-2.5 py-1.5 border-2 border-black ${
-                capo > 0 ? "bg-gold text-ink" : "bg-soot text-paper-dim"
+              className={`font-display text-xs px-2.5 py-1.5 rounded-full ${
+                capo > 0 ? "bg-gold text-white" : "bg-soot text-paper-dim"
               }`}
             >
               {capo > 0 ? `CAPO ${capo}` : "NO CAPO"}

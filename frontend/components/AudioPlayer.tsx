@@ -110,12 +110,12 @@ export default function AudioPlayer({
       const start = Math.max(c.timestamp, 0);
       const end = Math.min(c.end ?? duration, duration);
       if (start > cursor)
-        out.push({ start: cursor, end: start, hex: "#241f31" });
+        out.push({ start: cursor, end: start, hex: "#2b2b2b" });
       if (end > start) out.push({ start, end, hex: chordHex(c.chord) });
       cursor = Math.max(cursor, end);
     }
     if (cursor < duration)
-      out.push({ start: cursor, end: duration, hex: "#241f31" });
+      out.push({ start: cursor, end: duration, hex: "#2b2b2b" });
     return out;
   }, [chords, duration]);
 
@@ -134,7 +134,7 @@ export default function AudioPlayer({
   const progress = duration ? (currentTime / duration) * 100 : 0;
 
   return (
-    <div className="bg-coal border-2 border-black shadow-hard p-4 sm:p-5">
+    <div className="bg-coal border border-white/10 shadow-hard rounded-2xl p-4 sm:p-5">
       <audio
         ref={audioRef}
         src={src}
@@ -177,7 +177,7 @@ export default function AudioPlayer({
           type="button"
           onClick={togglePlay}
           aria-label={isPlaying ? "Pause" : "Play"}
-          className="shrink-0 w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-lime border-2 border-black shadow-hard flex items-center justify-center transition-transform hover:-translate-x-0.5 hover:-translate-y-0.5 active:translate-x-[3px] active:translate-y-[3px] active:shadow-none"
+          className="shrink-0 w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-lime shadow-hard flex items-center justify-center transition-transform hover:opacity-85 active:opacity-70"
         >
           {isPlaying ? (
             <Pause aria-hidden fill="currentColor" className="w-7 h-7 sm:w-8 sm:h-8 text-ink" />
@@ -230,7 +230,7 @@ export default function AudioPlayer({
             onPointerMove={(e) => scrubbing && scrubTo(e.clientX)}
             onPointerUp={() => setScrubbing(false)}
             onPointerCancel={() => setScrubbing(false)}
-            className="relative h-9 cursor-pointer touch-none select-none border-2 border-black bg-soot"
+            className="relative h-9 cursor-pointer touch-none select-none border border-white/10 rounded-lg bg-soot"
           >
             {/* chord segments */}
             <div className="absolute inset-0 flex">
@@ -241,7 +241,7 @@ export default function AudioPlayer({
                     width: `${((s.end - s.start) / (duration || 1)) * 100}%`,
                     backgroundColor: s.hex,
                   }}
-                  className="h-full border-r border-black/60 last:border-r-0"
+                  className="h-full border-r border-black/30 last:border-r-0"
                 />
               ))}
             </div>
@@ -252,7 +252,7 @@ export default function AudioPlayer({
             />
             {/* playhead */}
             <div
-              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3.5 h-9 bg-paper border-2 border-black shadow-hard-sm pointer-events-none"
+              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-9 bg-paper rounded-full shadow-hard-sm pointer-events-none"
               style={{ left: `${progress}%` }}
             />
           </div>

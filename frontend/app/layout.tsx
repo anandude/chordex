@@ -4,7 +4,7 @@ import {
   Geist_Mono,
   Noto_Sans_Devanagari,
   Noto_Sans_Malayalam,
-  Jersey_10,
+  Special_Elite,
   Space_Mono,
 } from "next/font/google";
 import "./globals.css";
@@ -20,9 +20,8 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-// Open-licensed (SIL OFL) Google Fonts — the repo ships no font files.
-const pixel = Jersey_10({
-  variable: "--font-pixel-face",
+const display = Special_Elite({
+  variable: "--font-display-face",
   subsets: ["latin"],
   weight: ["400"],
   display: "swap",
@@ -50,10 +49,10 @@ const notoMlym = Noto_Sans_Malayalam({
 });
 
 export const metadata: Metadata = {
-  title: "Chordex — chords + lyrics from any song",
+  title: "Chordex — Drop a song, get a playable chord sheet",
   applicationName: "Chordex",
   description:
-    "Upload a song and get every chord with timestamps, synced lyrics, transpose and easy-chord modes.",
+    "Chords and lyrics with every chord on the exact syllable where it changes. Transpose, Easy Mode, and Hindi / Malayalam lyrics in English letters.",
 };
 
 export default function RootLayout({
@@ -64,7 +63,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${pixel.variable} ${mono.variable} ${notoDeva.variable} ${notoMlym.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${display.variable} ${mono.variable} ${notoDeva.variable} ${notoMlym.variable} antialiased`}
       >
         <Providers>{children}</Providers>
       </body>

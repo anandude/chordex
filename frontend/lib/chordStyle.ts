@@ -1,6 +1,6 @@
-// Shared chord color language for the retro-brutalist kit.
-// Solid fills + black borders/shadows; type hues: major=violet, minor=teal,
-// extensions=gold, N=gray. Active/now highlight = gold.
+// Shared chord color language for the Chordex kit.
+// Soft fills + hairline borders; type hues: major=terracotta, minor=sage,
+// extensions=dusty blue, N=gray. Active/now highlight = terracotta.
 
 export type ChordType = "N" | "ext" | "minor" | "major";
 
@@ -13,17 +13,17 @@ export function chordType(chord: string): ChordType {
 
 // Raw hex per type — for inline styles (scrubber segments, chart fills)
 export const CHORD_HEX: Record<ChordType, string> = {
-  major: "#7c5cff",
-  minor: "#2dd4bf",
-  ext: "#ffb020",
-  N: "#4a4556",
+  major: "#d89b6f",
+  minor: "#7fc4b4",
+  ext: "#97abc9",
+  N: "#3a3a3a",
 };
 
 // Tailwind classes per type — for chip/card UI
 export const CHORD_CHIP: Record<ChordType, string> = {
   major: "bg-viol text-ink",
   minor: "bg-mint text-ink",
-  ext: "bg-gold text-ink",
+  ext: "bg-dusk text-ink",
   N: "bg-soot text-paper-dim",
 };
 
@@ -31,7 +31,7 @@ export const CHORD_CHIP: Record<ChordType, string> = {
 export const CHORD_TEXT: Record<ChordType, string> = {
   major: "text-viol",
   minor: "text-mint",
-  ext: "text-gold",
+  ext: "text-dusk",
   N: "text-paper-dim",
 };
 
