@@ -36,15 +36,22 @@ The site is fully client-side, so it ships as a static export. Every
 from the URL.
 
 ```bash
-cd frontend
+# From the repository root — the Next.js app lives there since it moved out of
+# frontend/ (commit 97470d6).
 NEXT_OUTPUT=export NEXT_PUBLIC_API_URL=https://8000-<id>.instabox.tech npx next build
 npx wrangler pages deploy out --project-name chordex --branch main
 ```
 
+Set the Pages project's **root directory** to the repository root. `public/_redirects`
+must ship with the export — it is what makes `/results/<id>` resolve on the
+static host, and the site 404s on every result link without it.
+
 ## Frontend on Vercel
 
-Deploy from `frontend/` with `vercel deploy --prod` (`vercel.json` pins the
-Next.js preset; `.vercelignore` keeps `.env.local` out). Set
+Deploy from the repository root with `vercel deploy --prod` (`vercel.json` pins
+the Next.js preset; `.vercelignore` keeps `.env.local` out). The Vercel
+project's **Root Directory** setting must be the repository root, not
+`frontend/`. Set
 `NEXT_PUBLIC_API_URL` to the InstaBox URL (no trailing slash) for
 Production, then redeploy: the value is baked in at build time. Put the Vercel
 domain in the backend's `ALLOWED_ORIGINS` and run `docker compose up -d`.

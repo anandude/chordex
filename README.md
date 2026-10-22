@@ -43,41 +43,97 @@ lyrics in easy-to-read English letters.
 - **Runs on your machine.** A 4 GB GPU (tested on a GTX 1650) makes it fast,
   but everything also runs on CPU.
 
-## Quick start
+<details>
+<summary>More screenshots</summary>
 
-```bash
-./start.sh --setup     # first run: installs deps, starts Redis + API + workers + UI
-```
+| Home | Mobile |
+|---|---|
+| <img src="docs/screenshots/home.png" width="480"> | <img src="docs/screenshots/results-mobile.png" width="240"> |
 
-Then open **http://localhost:3000**. Stop with `Ctrl+C` or `./start.sh --stop`.
-
-Manual setup, piece by piece:
-
-```bash
-# Backend (Python 3.11, ffmpeg required)
-cd backend
-python3 -m venv .venv && source .venv/bin/activate
-bash install_deps.sh
-uvicorn main:app --port 8000
-
-# Frontend (Node 18+)
-npm install
-npm run dev            # http://localhost:3000
-```
+</details>
 
 ## How it works
 
 ```
-audio ──► vocal separation (demucs) ──► chord detection (Chordino / MIR)
-                                      └► transcription (Whisper) ──► force-alignment
-heet built client-side: chords referenced by index, so transpose and
-Easy Mode relabel instantly without re-analysing.
+upload / YouTube link
+        │
+        ├─► chord job (seconds) ── Chordino (NNLS-chroma) or template-HMM
+        │                          + beat grid, key, tempo
+        │
+        └─► lyrics job (≈1 min on GPU)
+              LRCLIB lookup ──hit──► synced lines
+                   │ miss
+              Demucs vocal separation
+              language ID (hi / ml / en)
+              ASR: faster-whisper (Hindi/English fine-tunes)
+                   Indic-Transcribe-core (Malayalam)
+              MMS forced alignment → word & syllable timings
+                   │
+                   ▼
+   sheet builder (backend/pipeline/sheet.py): chords anchored to syllables
+                   │
+                   ▼
+   Next.js UI: transpose / Easy Mode / English letters, all client-side
 ```
 
-## Configuration
+Chords show up within seconds while lyrics are still processing. The two run
+on separate Redis/RQ queues.
 
-| Variable | Default | Purpose |
+## Quick start
+
+**You need:** Linux or macOS, Python 3.11, Node.js 20+, Docker (only to run
+Redis; a local `redis-server` works too), plus `ffmpeg` and `libsndfile`.
+
+```bash
+# Ubuntu/Debian system packages
+sudo apt-get install -y ffmpeg libsndfile1
+
+git clone https://github.com/anandude/chordex.git
+cd chordex
+./start.sh
+```
+
+The first run creates `backend/.venv`, installs everything and starts Redis,
+the API, both workers and the frontend. Open **http://localhost:3000**.
+
+| Command | |
+|---|---|
+| `./start.sh` | Start everything (installs on first run) |
+| `./start.sh --stop` | Stop everything |
+| `./start.sh --setup` | Reinstall dependencies, then start |
+| `./start.sh --prewarm` | Pre-download the speech models |
+| `./start.sh --docker` | API + worker + Redis in Docker Compose (CPU) |
+
+Logs are in `.run/logs/` (`worker-lyrics.log` for lyrics).
+
+### Malayalam (one-time)
+
+The default Malayalam model, [`bodhan-ai/indic-transcribe-core`](https://huggingface.co/bodhan-ai/indic-transcribe-core),
+is gated. Accept its terms on Hugging Face, then log in once:
+
+```bash
+backend/.venv/bin/hf auth login
+```
+
+Without this, Malayalam quietly falls back to an older Whisper fine-tune.
+
+### GPU
+
+GPU use is automatic (`WHISPER_DEVICE=auto`, `LYRICS_DEVICE=auto`). Defaults
+are tuned for a 4 GB card: int8 Whisper, with one model on the GPU at a time.
+With no GPU, everything runs on CPU, and lyrics take a few minutes instead of
+about one.
+
+### Configuration
+
+Every option is documented in [`backend/.env.example`](backend/.env.example).
+Copy it to `backend/.env` to change anything. The ones you're most likely to
+touch:
+
+| Variable | Default | |
 |---|---|---|
+| `ENABLE_LYRICS` | `1` | `0` = chords only |
+| `LYRICS_LRCLIB` | `1` | Look up verified lyrics before transcribing |
 | `LYRICS_ROMAN_BACKEND` | `readable` | English-letter spelling engine |
 | `MAX_FILE_SIZE_MB` | `20` | Upload limit |
 | `YOUTUBE_MAX_DURATION_S` | `1200` | Longest YouTube video accepted |
@@ -91,11 +147,46 @@ Easy Mode relabel instantly without re-analysing.
 | `POST /api/analyze-url` | JSON `{url, language?, title?, artist?}` (YouTube) → `{job_id}` |
 | `GET /api/status/{job_id}` | Chords as soon as they're ready; `result.sheet` once lyrics land |
 | `GET /api/audio/{job_id}` | The audio, with Range support, for playback |
+| `DELETE /api/jobs/{job_id}` | Cancel |
+| `GET /health` | Config + Redis check |
+
+## Pages
+
+The Next.js app lives at the repository root (it moved out of `frontend/`).
+
+| Route | |
+|---|---|
+| `/` | Landing page |
+| `/upload` | Drop a file, paste a YouTube link, pick a language |
+| `/results/<job_id>` | Playback controls + the chord sheet |
+
+The site is deployed as a static export, so every `/results/<id>` is served by
+one exported page: `public/_redirects` rewrites the path and
+[`lib/staticJob.ts`](lib/staticJob.ts) reads the real id from the URL.
+
+## Deployment
+
+The live site is a static frontend (Cloudflare Pages, or Vercel) talking to a
+CPU backend on an InstaBox machine. See
+[`deploy/instabox/README.md`](deploy/instabox/README.md) for the Docker Compose
+stack, the build commands and the environment variables.
+
+## Development
+
+```bash
+cd backend && .venv/bin/python -m pytest -q    # backend tests
+npm run lint && npx tsc --noEmit               # frontend checks (repo root)
+```
+
+`eval/` holds the benchmark harness. `eval/run_eval.py` measures timing and,
+when reference files exist, lyrics accuracy and chord placement (see
+[`eval/refs/REFERENCES.md`](eval/refs/REFERENCES.md)). Design notes live in
+[`docs/`](docs).
 
 ## Contributing
 
-Contributions are welcome — bug reports, tuned language models, spelling fixes
-for the English-letter view, and support for more languages.
+Contributions are very welcome, especially chord or lyrics accuracy reports,
+spelling fixes for the English-letter view, and support for more languages.
 Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started, and please follow the
 [code of conduct](CODE_OF_CONDUCT.md).
 
@@ -109,6 +200,25 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started, and please follow the
 - Only Hindi and Malayalam have tuned models and spelling rules. Other Indic
   scripts get generic transliteration.
 
-## License
+## License and responsible use
 
-[MIT](LICENSE). Third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Chordex's code is [MIT-licensed](LICENSE). It uses third-party models and
+libraries with **their own licenses**, including non-commercial model weights
+(MMS forced alignment) and an AGPL-3.0 library (aksharamukha). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before any commercial or
+hosted use.
+
+Songs and lyrics are copyrighted. Use Chordex with music you have the right
+to use, and respect YouTube's Terms of Service when using YouTube links.
+Never commit audio to this repository.
+
+## Acknowledgements
+
+[Chordino / NNLS-chroma](http://www.isophonics.net/nnls-chroma),
+[Demucs](https://github.com/facebookresearch/demucs),
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper),
+[adalat-ai](https://huggingface.co/adalat-ai) Indic Whisper fine-tunes,
+[Bodhan AI / AI4Bharat](https://huggingface.co/bodhan-ai) Indic-Transcribe,
+[Meta MMS](https://github.com/facebookresearch/fairseq/tree/main/examples/mms),
+[LRCLIB](https://lrclib.net), [Aksharamukha](https://github.com/virtualvinodh/aksharamukha),
+and [yt-dlp](https://github.com/yt-dlp/yt-dlp).
