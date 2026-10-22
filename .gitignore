@@ -22,6 +22,12 @@ frontend/out/
 frontend/.env.local
 frontend/.env*.local
 frontend/tsconfig.tsbuildinfo
+# frontend moved to the repo root; ignore its build output there too
+node_modules/
+.next/
+out/
+.env*.local
+tsconfig.tsbuildinfo
 
 # IDE / OS
 .idea/
@@ -44,7 +50,8 @@ backend/models/*.ckpt
 
 # Raw design downloads (not wired into the app)
 /assets/
-/public/
+/public/graphics/
+/public/logo/
 backend/models/ct2/
 
 # Audio is never committed (copyright). Put your own songs here locally.
