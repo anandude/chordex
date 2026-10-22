@@ -78,3 +78,122 @@ def test_music_metadata_wins_over_title():
 
 def test_empty_title_has_a_name():
     assert youtube.title_hints({})["name"] == "youtube"
+
+
+# ── server-side bot challenges (datacenter IPs) ───────────────────────────
+
+_BOT = (
+    "ERROR: [youtube] VdyBtGaspss: Sign in to confirm you're not a bot. "
+    "Use --cookies-from-browser or --cookies for the authentication."
+)
+
+
+class _FakeDownloadError(Exception):
+    pass
+
+
+def _install_fake_yt_dlp(monkeypatch, attempts):
+    """Install a fake ``yt_dlp`` whose n-th call follows ``attempts[n]``.
+
+    Each entry is ``("error", "message")`` or ``("ok", info_dict)``. Returns the
+    option dicts actually used, in order, so a test can assert what was tried.
+    """
+    import sys
+    import types
+
+    calls: list[dict] = []
+
+    class YoutubeDL:
+        def __init__(self, opts):
+            self.opts = opts
+            calls.append(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download=True):
+            kind, payload = attempts[len(calls) - 1]
+            if kind == "error":
+                raise _FakeDownloadError(payload)
+            outtmpl = self.opts["outtmpl"]
+            Path(outtmpl.replace("%(ext)s", "m4a")).write_bytes(b"audio")
+            return payload
+
+    monkeypatch.setitem(
+        sys.modules,
+        "yt_dlp",
+        types.SimpleNamespace(
+            YoutubeDL=YoutubeDL,
+            utils=types.SimpleNamespace(DownloadError=_FakeDownloadError),
+        ),
+    )
+    return calls
+
+
+def test_bot_challenge_retries_with_the_next_client(monkeypatch, tmp_path):
+    monkeypatch.setenv("YOUTUBE_PLAYER_CLIENTS", "android_vr,ios")
+    calls = _install_fake_yt_dlp(monkeypatch, [
+        ("error", _BOT),
+        ("ok", {"title": "Song", "channel": "Artist - Topic", "duration": 200}),
+    ])
+
+    path, hints = youtube.fetch_audio("https://youtu.be/VdyBtGaspss", tmp_path)
+
+    assert path.exists()
+    assert hints["name"] == "Artist - Song"
+    assert len(calls) == 2
+    assert "extractor_args" not in calls[0]  # default client first
+    assert calls[1]["extractor_args"] == {"youtube": {"player_client": ["android_vr"]}}
+
+
+def test_bot_challenge_on_every_client_is_a_friendly_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("YOUTUBE_PLAYER_CLIENTS", "android_vr,ios")
+    calls = _install_fake_yt_dlp(monkeypatch, [("error", _BOT)] * 3)
+
+    with pytest.raises(youtube.YouTubeError) as exc:
+        youtube.fetch_audio("https://youtu.be/VdyBtGaspss", tmp_path)
+
+    assert str(exc.value) == youtube._BLOCKED_MESSAGE
+    assert len(calls) == 3  # default + the two configured clients
+
+
+def test_a_real_error_is_not_retried(monkeypatch, tmp_path):
+    monkeypatch.setenv("YOUTUBE_PLAYER_CLIENTS", "android_vr,ios")
+    calls = _install_fake_yt_dlp(monkeypatch, [
+        ("error", "ERROR: [youtube] VdyBtGaspss: Video unavailable"),
+    ])
+
+    with pytest.raises(youtube.YouTubeError) as exc:
+        youtube.fetch_audio("https://youtu.be/VdyBtGaspss", tmp_path)
+
+    assert "Video unavailable" in str(exc.value)
+    assert len(calls) == 1
+
+
+def test_cookies_and_proxy_are_passed_through(monkeypatch, tmp_path):
+    monkeypatch.setenv("YOUTUBE_COOKIES_FILE", "/run/secrets/cookies.txt")
+    monkeypatch.setenv("YOUTUBE_PROXY", "http://proxy.example:8080")
+    monkeypatch.setenv("YOUTUBE_PLAYER_CLIENTS", "")
+    calls = _install_fake_yt_dlp(monkeypatch, [
+        ("ok", {"title": "Song", "channel": "Artist"}),
+    ])
+
+    youtube.fetch_audio("https://youtu.be/VdyBtGaspss", tmp_path)
+
+    assert calls[0]["cookiefile"] == "/run/secrets/cookies.txt"
+    assert calls[0]["proxy"] == "http://proxy.example:8080"
+
+
+def test_player_client_list_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_PLAYER_CLIENTS", " android_vr , ,ios ")
+    assert youtube._player_clients() == ("android_vr", "ios")
+    monkeypatch.delenv("YOUTUBE_PLAYER_CLIENTS")
+    assert youtube._player_clients() == youtube._DEFAULT_PLAYER_CLIENTS
+
+
+def test_clean_error_strips_the_ytdlp_prefix():
+    assert youtube._clean_error(Exception(_BOT)).startswith("Sign in to confirm")
+

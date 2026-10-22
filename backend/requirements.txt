@@ -12,6 +12,11 @@ numpy==1.26.4
 scipy==1.13.0
 redis==5.0.4
 rq==1.16.2
+# Song library (per-device history): Postgres, Neon in production. Optional at
+# runtime — with no DATABASE_URL the library is a no-op — but imported by
+# main.py, so the driver ships in every image call. [binary] bundles libpq.
+psycopg[binary]>=3.1,<4
+psycopg-pool>=3.2,<4
 python-dotenv==1.0.1
 pydantic==2.7.1
 soundfile==0.12.1

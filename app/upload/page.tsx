@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { analyzeUrl, isYouTubeUrl, uploadAudio } from "@/lib/api";
+import SongLibrary from "@/components/SongLibrary";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB
 const ALLOWED_EXTS = [".mp3", ".wav", ".ogg", ".flac"];
@@ -286,6 +287,10 @@ export default function Upload() {
             {error}
           </div>
         )}
+
+        {/* Songs already transcribed in this browser — reopen one to get its
+            chord sheet back (the audio itself is long gone). */}
+        <SongLibrary />
       </div>
 
       <p className="mt-10 font-cl text-paper-dim text-xs sm:text-sm text-center tracking-wide">

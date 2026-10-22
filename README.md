@@ -40,6 +40,10 @@ lyrics in easy-to-read English letters.
   vocals are separated and transcribed.
 - **Play along.** Chord-coloured scrubber, live NOW/NEXT chord, the sung line
   highlighted as it plays, and Space to play or pause.
+- **Your songs.** Every transcription is listed on the upload page, so you can
+  reopen one later and transpose it again. History is tied to a random id in
+  this browser, not an account: nobody else can see your songs, and there is no
+  sign-up. Saved songs keep the sheet but not the audio.
 - **Runs on your machine.** A 4 GB GPU (tested on a GTX 1650) makes it fast,
   but everything also runs on CPU.
 
@@ -137,6 +141,7 @@ touch:
 | `LYRICS_ROMAN_BACKEND` | `readable` | English-letter spelling engine |
 | `MAX_FILE_SIZE_MB` | `20` | Upload limit |
 | `YOUTUBE_MAX_DURATION_S` | `1200` | Longest YouTube video accepted |
+| `DATABASE_URL` | *(unset)* | Postgres for song history; unset = history off |
 | `NEXT_PUBLIC_API_URL` (frontend) | `http://localhost:8000` | Where the UI finds the API |
 
 ## API
@@ -148,7 +153,16 @@ touch:
 | `GET /api/status/{job_id}` | Chords as soon as they're ready; `result.sheet` once lyrics land |
 | `GET /api/audio/{job_id}` | The audio, with Range support, for playback |
 | `DELETE /api/jobs/{job_id}` | Cancel |
+| `GET /api/library` | This device's saved songs (metadata only) |
+| `GET /api/library/{job_id}` | One saved song, including its full result |
+| `DELETE /api/library/{job_id}` | Forget one saved song |
 | `GET /health` | Config + Redis check |
+
+The library endpoints take the owner as an `X-Device-Id` header (or a
+`?device_id=` query parameter) — the random id the browser keeps in
+`localStorage`. Every read is scoped to it, so one visitor can never see
+another's songs. Set `DATABASE_URL` (see below) to turn the library on; without
+it the endpoints report `{"enabled": false}` and nothing else changes.
 
 ## Pages
 

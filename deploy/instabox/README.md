@@ -29,6 +29,36 @@ cd ~/chordex && git pull && cd deploy/instabox && docker compose up -d --build
 
 Logs: `docker compose logs -f worker`.
 
+### Song history (Neon Postgres)
+
+"Your songs" on `/upload` is stored in Postgres. The table is created on boot,
+so there is no migration step.
+
+1. Create a project at [console.neon.tech](https://console.neon.tech) (free tier
+   is plenty — a few hundred rows per user, and the compute sleeps when idle).
+2. Copy the **pooled** connection string (the host with `-pooler`).
+3. Add it to `.env` on the box, then recreate the API so it picks it up:
+
+```bash
+cd ~/chordex/deploy/instabox
+echo 'DATABASE_URL=postgresql://...-pooler....neon.tech/neondb?sslmode=require' >> .env
+docker compose up -d
+curl https://8000-<id>.<domain>/health    # "library": true
+```
+
+To keep the password out of your shell history, put the whole file in the
+Vault instead (`instabox vault set-file chordex/deploy/instabox/.env --from
+./prod.env`). Leaving `DATABASE_URL` unset is fine too: the library quietly
+turns itself off and every endpoint keeps working.
+
+Saved songs are sheet-only. Uploaded audio is deleted after two hours, so a
+song reopened from history gives the chord sheet, transpose and Easy Mode, but
+no play-along — the results page says so instead of offering a dead player.
+
+History is per browser, not per person: the id lives in `localStorage`, so
+clearing site data (or opening the site on another device) starts a new empty
+list. That is the cost of having no accounts.
+
 ## Frontend on Cloudflare Pages (free)
 
 The site is fully client-side, so it ships as a static export. Every
@@ -67,7 +97,15 @@ domain in the backend's `ALLOWED_ORIGINS` and run `docker compose up -d`.
   aligner.
 - **CPU only.** Chords take seconds. Lyrics that aren't on LRCLIB take a few
   minutes (Demucs and Whisper on 4 cores).
-- **YouTube** often blocks cloud IPs. File uploads always work.
+- **YouTube.** Datacenter IPs get "Sign in to confirm you're not a bot".
+  `youtube.py` retries the download once per client in `YOUTUBE_PLAYER_CLIENTS`
+  (default `android_vr,ios,tv,mweb,web_safari`) because YouTube trusts some
+  clients more than others — that alone often fixes it. If every client is
+  refused, either drop a Netscape `cookies.txt` at `YOUTUBE_COOKIES_FILE`
+  (export it from a signed-in browser on your laptop, and mount it into the
+  `api` container) or set `YOUTUBE_PROXY` to a residential proxy. Cookies
+  expire and tie downloads to that account, so treat them as a stopgap. File
+  uploads always work.
 - **The API URL is public.** Anyone who has it can submit jobs.
 - **Disk.** Uploaded audio is deleted after two hours by the `cleanup`
   service. Models live in the `hf_cache`, `torch_cache` and `ct2_models` volumes.

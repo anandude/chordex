@@ -135,6 +135,8 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       if (status === "failed" || status === "cancelled") return false;
+      // A library copy is final; nothing left to poll for.
+      if (query.state.data?.from_library) return false;
       // S3: chords resolve first — keep polling in the background until the
       // slow lyrics job also settles, then go quiet.
       const lyrics = query.state.data?.result?.lyrics_status;
@@ -241,6 +243,9 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
       : "?";
 
   const showResults = data?.status === "done" && Boolean(result);
+  // Saved songs keep the sheet but not the audio (uploads are deleted two
+  // hours after analysis), so the player and its now/next bar are hidden.
+  const fromLibrary = Boolean(data?.from_library);
   const hasRoman = Boolean(
     result?.sheet?.rows.some((r) => r.kind === "line" && r.words.some((w) => w.roman))
   );
@@ -478,26 +483,36 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
                   )}
               </div>
 
-              <AudioPlayer
-                ref={playerRef}
-                src={audioUrl(jobId)}
-                chords={displayChords}
-                onTimeUpdate={setPlayhead}
-                onPlayingChange={setPlaying}
-                seekTo={seekTo}
-              />
+              {fromLibrary ? (
+                <p className="bg-coal border border-white/10 shadow-hard-sm rounded-2xl px-4 py-3 font-cl text-paper-dim text-xs text-center leading-relaxed">
+                  saved chord sheet · the audio is deleted two hours after
+                  analysis, so play-along is gone. transpose and easy mode still
+                  work.
+                </p>
+              ) : (
+                <>
+                  <AudioPlayer
+                    ref={playerRef}
+                    src={audioUrl(jobId)}
+                    chords={displayChords}
+                    onTimeUpdate={setPlayhead}
+                    onPlayingChange={setPlaying}
+                    seekTo={seekTo}
+                  />
 
-              <div className="hidden lg:block">
-                <NowNextBar
-                  chords={displayChords}
-                  activeIndex={activeIndex}
-                  currentTime={playhead}
-                  playing={playing}
-                  onSeek={seek}
-                  sticky={false}
-                  compact
-                />
-              </div>
+                  <div className="hidden lg:block">
+                    <NowNextBar
+                      chords={displayChords}
+                      activeIndex={activeIndex}
+                      currentTime={playhead}
+                      playing={playing}
+                      onSeek={seek}
+                      sticky={false}
+                      compact
+                    />
+                  </div>
+                </>
+              )}
 
               {/* Chord controls */}
               <div className="bg-coal border border-white/10 shadow-hard rounded-2xl divide-y divide-white/10">
@@ -572,26 +587,30 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
               </div>
               {/* the wrapper is the sticky element: a sticky child can't
                   outlive a parent that only wraps it */}
-              <div className="lg:hidden sticky top-0 z-20 -mx-1 px-1 pt-3 pb-2 bg-ink shadow-hard">
-                <NowNextBar
-                  chords={displayChords}
-                  activeIndex={activeIndex}
-                  currentTime={playhead}
-                  playing={playing}
-                  onSeek={seek}
-                  onTogglePlay={togglePlay}
-                  sticky={false}
-                />
-              </div>
+              {!fromLibrary && (
+                <div className="lg:hidden sticky top-0 z-20 -mx-1 px-1 pt-3 pb-2 bg-ink shadow-hard">
+                  <NowNextBar
+                    chords={displayChords}
+                    activeIndex={activeIndex}
+                    currentTime={playhead}
+                    playing={playing}
+                    onSeek={seek}
+                    onTogglePlay={togglePlay}
+                    sticky={false}
+                  />
+                </div>
+              )}
               <ChordSheet
                 chords={displayChords}
                 sheet={result.sheet}
                 hasLyrics={Boolean(result.lyrics?.length || result.lyric_lines?.length)}
                 script={script}
-                currentTime={playhead}
-                activeChord={activeIndex}
+                // No player on a saved song: nothing should look "now playing",
+                // and -1 keeps the sheet from auto-scrolling to the first row.
+                currentTime={fromLibrary ? -1 : playhead}
+                activeChord={fromLibrary ? null : activeIndex}
                 lyricsError={result.lyrics_error}
-                onSeek={seek}
+                onSeek={fromLibrary ? undefined : seek}
               />
               <p className="lg:hidden font-cl text-paper-dim text-xs sm:text-sm text-center pt-1 pb-2">
                 auto-generated — always trust your ear on complex tracks

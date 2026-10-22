@@ -8,6 +8,9 @@ Endpoints:
     POST /api/analyze-url        YouTube link → fetch audio → same as upload
     GET  /api/status/{job_id}    Poll job status / result
     GET  /api/audio/{job_id}     Stream uploaded audio for playback (while available)
+    GET  /api/library            This device's saved songs (metadata only)
+    GET  /api/library/{job_id}   One saved song, with its full result payload
+    DELETE /api/library/{job_id} Forget one saved song
     GET  /health                 Uptime health check
 """
 
@@ -16,12 +19,22 @@ import logging
 import os
 import tempfile
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
 import redis
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
@@ -30,13 +43,26 @@ from rq import Queue
 from rq.exceptions import NoSuchJobError
 from rq.job import Job
 
+import library
 import storage
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+
 # ── App setup ─────────────────────────────────────────────────────────────────
-app = FastAPI(title="Chordex API", version="2.0.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Create the library table when a database is configured (no-op without).
+
+    Kept off the request path so a slow/absent Neon compute never delays a
+    request; the store is best-effort everywhere anyway.
+    """
+    await run_in_threadpool(library.init)
+    yield
+
+
+app = FastAPI(title="Chordex API", version="2.0.0", lifespan=lifespan)
 
 _allowed_origins = [
     o.strip()
@@ -113,6 +139,9 @@ class StatusResponse(BaseModel):
     queue_name: str | None = None
     queue_position: int | None = None
     queue_depth: int | None = None
+    #: True when the live job has expired and this is the browser's saved copy
+    #: from the library. There is no audio behind it, so the UI hides the player.
+    from_library: bool = False
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse, status_code=202)
@@ -122,6 +151,7 @@ async def analyze(
     title: str | None = Form(default=None),  # Phase 2: raises LRCLIB hits
     artist: str | None = Form(default=None),
     album: str | None = Form(default=None),
+    device_id: str | None = Form(default=None),  # owner for the song library
 ):
     """Accept an audio upload, store it, enqueue analysis, return a job ID."""
     ext = Path(file.filename or "").suffix.lstrip(".").lower()
@@ -152,6 +182,7 @@ async def analyze(
         job_id, contents, ext, language,
         filename=Path(file.filename or "").name or None,
         meta={"title": title, "artist": artist, "album": album},
+        device_id=device_id,
     )
     return AnalyzeResponse(job_id=job_id)
 
@@ -161,6 +192,7 @@ class AnalyzeUrlRequest(BaseModel):
     language: str | None = None
     title: str | None = None
     artist: str | None = None
+    device_id: str | None = None  # owner for the song library
 
 
 @app.post("/api/analyze-url", response_model=AnalyzeResponse, status_code=202)
@@ -194,6 +226,7 @@ async def analyze_url(req: AnalyzeUrlRequest):
             "title": req.title or hints.get("title"),
             "artist": req.artist or hints.get("artist"),
         },
+        device_id=req.device_id,
     )
     _redis_kv.setex(f"name:{job_id}", _RESULT_TTL, hints["name"])
     return AnalyzeResponse(job_id=job_id)
@@ -207,6 +240,7 @@ def _store_and_enqueue(
     *,
     filename: str | None,
     meta: dict[str, str | None],
+    device_id: str | None = None,
 ) -> None:
     try:
         uri = storage.save_upload(job_id, contents, ext)
@@ -217,6 +251,9 @@ def _store_and_enqueue(
 
     # Remember URI so we can serve audio during the result TTL window
     _redis_kv.setex(f"uri:{job_id}", _URI_TTL, uri)
+    # Remember the owner so the finished song can be filed into their library
+    if library.valid_device_id(device_id):
+        _redis_kv.setex(f"device:{job_id}", _RESULT_TTL, device_id)
 
     lang = (language or "").strip().lower() or None
     meta = {k: (v or "").strip() or None for k, v in meta.items()}
@@ -372,8 +409,53 @@ def _attach_sheet(job_id: str, result: dict) -> None:
             pass
 
 
+def _library_state(result: dict) -> str:
+    """``final`` once lyrics have settled, ``partial`` before that.
+
+    A partial save files the chord sheet as soon as chords are ready, so a
+    visitor who closes the tab during the lyrics job still keeps the song; the
+    row is refreshed once lyrics land (or fail).
+    """
+    settled = result.get("lyrics_status") in ("done", "failed", "disabled")
+    return "final" if settled else "partial"
+
+
+def _save_to_library(job_id: str, device_id: str, state: str, result: dict) -> None:
+    """Background task: file a finished song into its owner's library."""
+    if library.save(job_id, device_id, result):
+        try:
+            _redis_kv.setex(f"libsaved:{job_id}", _RESULT_TTL, state)
+        except Exception:
+            pass
+
+
+def _library_update(job_id: str, result: dict) -> tuple[str, str, dict] | None:
+    """(device_id, state, result) when the stored copy is out of date.
+
+    One Redis read per poll; the write itself runs in a background task so a
+    cold Neon compute never delays the status response. Each job is written at
+    most twice (chords-only, then once lyrics settle).
+    """
+    if not library.enabled():
+        return None
+    try:
+        device_id = _redis_kv.get(f"device:{job_id}")
+        if not device_id:
+            return None
+        state = _library_state(result)
+        if _redis_kv.get(f"libsaved:{job_id}") == state:
+            return None
+    except Exception:
+        return None
+    return device_id, state, result
+
+
 @app.get("/api/status/{job_id}", response_model=StatusResponse)
-async def get_status(job_id: str):
+async def get_status(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    x_device_id: str | None = Header(default=None),
+):
     """Poll the status of a chord-analysis job.
 
     S3 staged delivery: returns ``done`` as soon as the fast chord job is
@@ -398,6 +480,12 @@ async def get_status(job_id: str):
         if name:
             result["source_name"] = name
         resp = StatusResponse(status="done", result=result)
+        pending = _library_update(job_id, result)
+        if pending:
+            device_id, state, snapshot = pending
+            background_tasks.add_task(
+                _save_to_library, job_id, device_id, state, snapshot
+            )
         if result.get("lyrics_status") in ("pending", "processing"):
             qn, qp, qd = _queue_info(f"{job_id}:lyrics", _lyrics_queue)
             resp.queue_name, resp.queue_position, resp.queue_depth = qn, qp, qd
@@ -410,6 +498,15 @@ async def get_status(job_id: str):
     # for jobs enqueued before the S3 split, which used the bare job_id).
     job = _fetch_job(f"{job_id}:chords") or _fetch_job(job_id)
     if job is None:
+        # Redis keeps a finished result for an hour; the library keeps it for
+        # good. Serve this browser's saved copy rather than a 404, which is how
+        # a song reopened from "your songs" still renders.
+        if library.valid_device_id(x_device_id):
+            saved = await run_in_threadpool(library.get_song, job_id, x_device_id)
+            if saved and saved.get("payload"):
+                return StatusResponse(
+                    status="done", result=saved["payload"], from_library=True
+                )
         raise HTTPException(status_code=404, detail="Job not found.")
 
     if job.is_queued:
@@ -538,4 +635,85 @@ async def health():
         "chord_meta": os.getenv("CHORD_META", "1"),
         "snap_to_beats": os.getenv("SNAP_TO_BEATS", "1"),
         "chroma": f"{os.getenv('CHROMA_KIND', 'cqt')}/{os.getenv('CHROMA_HOP', '2048')}",
+        "library": library.enabled(),
     }
+
+
+# ── Song library (per anonymous device) ───────────────────────────────────────
+# Chordex has no accounts: the browser generates a device id (lib/device.ts)
+# and every library read is scoped to it, so nobody can see another visitor's
+# songs. There is no cross-device sync, by design.
+
+class SavedSong(BaseModel):
+    id: str
+    created_at: str | None = None
+    source_name: str | None = None
+    artist: str | None = None
+    key: str | None = None
+    tempo: float | None = None
+    duration: float | None = None
+    engine: str | None = None
+    lyrics_language: str | None = None
+    lyrics_status: str | None = None
+    lyrics_source: str | None = None
+    n_chords: int = 0
+    has_lyrics: bool = False
+
+
+class LibraryResponse(BaseModel):
+    #: False when the server has no store configured, so the UI can hide the
+    #: history section instead of claiming "no songs yet".
+    enabled: bool = False
+    songs: list[SavedSong] = []
+
+
+def _owner(device_id: str | None, header: str | None) -> str:
+    """Device id from the ``X-Device-Id`` header (preferred) or ``?device_id=``."""
+    value = (header or device_id or "").strip()
+    if not library.valid_device_id(value):
+        raise HTTPException(status_code=400, detail="A valid device_id is required.")
+    return value
+
+
+@app.get("/api/library", response_model=LibraryResponse)
+async def list_library(
+    device_id: str | None = None,
+    x_device_id: str | None = Header(default=None),
+):
+    """This device's saved songs, newest first (metadata only)."""
+    if not library.enabled():
+        return LibraryResponse(enabled=False)
+    songs = await run_in_threadpool(library.list_songs, _owner(device_id, x_device_id))
+    return LibraryResponse(enabled=True, songs=songs)
+
+
+@app.get("/api/library/{job_id}")
+async def get_library_song(
+    job_id: str,
+    device_id: str | None = None,
+    x_device_id: str | None = Header(default=None),
+):
+    """One saved song with the full result payload (404 if not this device's)."""
+    if not library.enabled():
+        raise HTTPException(status_code=404, detail="Song not found.")
+    song = await run_in_threadpool(library.get_song, job_id, _owner(device_id, x_device_id))
+    if song is None:
+        raise HTTPException(status_code=404, detail="Song not found.")
+    return {"song": song}
+
+
+@app.delete("/api/library/{job_id}", status_code=202)
+async def forget_library_song(
+    job_id: str,
+    device_id: str | None = None,
+    x_device_id: str | None = Header(default=None),
+):
+    """Forget one saved song. Only the device that saved it can."""
+    if not library.enabled():
+        raise HTTPException(status_code=404, detail="Song not found.")
+    deleted = await run_in_threadpool(
+        library.delete_song, job_id, _owner(device_id, x_device_id)
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Song not found.")
+    return {"deleted": True}

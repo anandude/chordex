@@ -4,6 +4,8 @@
  * Typed wrappers for the Chordex backend API.
  */
 
+import { getDeviceId } from "./device";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export interface ChordEvent {
@@ -106,6 +108,8 @@ export interface JobStatus {
   queue_name?: string | null;
   queue_position?: number | null;
   queue_depth?: number | null;
+  /** The live job expired and this is the saved copy from the library. */
+  from_library?: boolean;
 }
 
 export interface UploadMeta {
@@ -130,6 +134,9 @@ export async function uploadAudio(
   if (meta?.title) formData.append("title", meta.title);
   if (meta?.artist) formData.append("artist", meta.artist);
   if (meta?.album) formData.append("album", meta.album);
+  // Owner for the song library, so the song is in this browser's history.
+  const deviceId = getDeviceId();
+  if (deviceId) formData.append("device_id", deviceId);
 
   const res = await fetch(`${API_URL}/api/analyze`, {
     method: "POST",
@@ -159,6 +166,7 @@ export async function analyzeUrl(
       language: language && language !== "auto" ? language : null,
       title: meta?.title || null,
       artist: meta?.artist || null,
+      device_id: getDeviceId() || null,
     }),
   });
   if (!res.ok) {
@@ -184,7 +192,12 @@ export function isYouTubeUrl(text: string): boolean {
 }
 
 export async function getJobStatus(jobId: string): Promise<JobStatus> {
-  const res = await fetch(`${API_URL}/api/status/${encodeURIComponent(jobId)}`);
+  const deviceId = getDeviceId();
+  const res = await fetch(`${API_URL}/api/status/${encodeURIComponent(jobId)}`, {
+    // Lets the API fall back to this browser's saved copy once the live result
+    // has expired, instead of returning 404.
+    headers: deviceId ? { "X-Device-Id": deviceId } : undefined,
+  });
   if (!res.ok) {
     if (res.status === 404) throw new Error("Job not found");
     throw new Error("Failed to fetch job status");
@@ -197,4 +210,58 @@ export async function cancelJob(jobId: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) throw new Error("Failed to cancel job");
+}
+
+// ── Song library (per anonymous device: backend/library.py) ────────────────
+// Saved songs are sheet-only: the audio is deleted two hours after analysis,
+// so a reopened song transposes, switches to Easy Mode and copies out exactly
+// like a fresh one, but the play-along player is gone.
+
+export interface SavedSong {
+  id: string;
+  created_at: string | null;
+  source_name: string | null;
+  artist: string | null;
+  key: string | null;
+  tempo: number | null;
+  duration: number | null;
+  engine: string | null;
+  lyrics_language: string | null;
+  lyrics_status: string | null;
+  lyrics_source: string | null;
+  n_chords: number;
+  has_lyrics: boolean;
+}
+
+export interface LibraryPage {
+  /** False when the backend has no store configured — hide the section. */
+  enabled: boolean;
+  songs: SavedSong[];
+}
+
+function deviceHeader(deviceId: string): HeadersInit {
+  return { "X-Device-Id": deviceId };
+}
+
+export async function listLibrary(): Promise<LibraryPage> {
+  const deviceId = getDeviceId();
+  if (!deviceId) return { enabled: false, songs: [] };
+  const res = await fetch(`${API_URL}/api/library`, {
+    headers: deviceHeader(deviceId),
+  });
+  if (!res.ok) throw new Error("Could not load your songs");
+  return res.json();
+}
+
+export async function forgetLibrarySong(jobId: string): Promise<void> {
+  const deviceId = getDeviceId();
+  if (!deviceId) return;
+  const res = await fetch(`${API_URL}/api/library/${encodeURIComponent(jobId)}`, {
+    method: "DELETE",
+    headers: deviceHeader(deviceId),
+  });
+  // Already gone is the outcome the caller wanted.
+  if (!res.ok && res.status !== 404) {
+    throw new Error("Could not remove that song");
+  }
 }

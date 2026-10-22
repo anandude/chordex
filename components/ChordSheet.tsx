@@ -21,7 +21,9 @@ interface Props {
   activeChord: number | null;
   hasLyrics: boolean;
   lyricsError?: string | null;
-  onSeek: (time: number) => void;
+  /** Click-to-seek. Omitted on a saved song: its audio is gone, so the sheet
+   *  is read-only and should not look clickable. */
+  onSeek?: (time: number) => void;
 }
 
 function formatTime(seconds: number): string {
@@ -97,7 +99,7 @@ export default function ChordSheet({
         active={ci === activeChord}
         faint={opts.faint}
         size={opts.size}
-        onClick={() => onSeek(chords[ci].timestamp)}
+        onClick={() => onSeek?.(chords[ci].timestamp)}
       />
     );
 
@@ -181,7 +183,11 @@ export default function ChordSheet({
     <section className="bg-paper text-ink border border-black/5 shadow-hard rounded-2xl px-4 py-6 sm:px-8 sm:py-8">
       {rows.map((row, i) => {
         const active = i === activeRow;
-        const rowTone = active ? "bg-ink text-paper" : "hover:bg-ink/[0.04]";
+        const rowTone = active
+          ? "bg-ink text-paper"
+          : onSeek
+            ? "hover:bg-ink/[0.04]"
+            : "";
 
         if (row.kind === "section") {
           return (
@@ -203,8 +209,8 @@ export default function ChordSheet({
             <div
               key={i}
               ref={active ? activeRowRef : undefined}
-              onClick={() => onSeek(row.t)}
-              className={`-mx-2 sm:-mx-3 px-2 sm:px-3 py-2.5 my-1 cursor-pointer transition-colors rounded-sm ${rowTone}`}
+              onClick={onSeek ? () => onSeek(row.t) : undefined}
+              className={`-mx-2 sm:-mx-3 px-2 sm:px-3 py-2.5 my-1 transition-colors rounded-sm ${onSeek ? "cursor-pointer" : ""} ${rowTone}`}
             >
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 {vis.map(([ci, beats]) => (
@@ -224,8 +230,8 @@ export default function ChordSheet({
           <div
             key={i}
             ref={active ? activeRowRef : undefined}
-            onClick={() => onSeek(row.t)}
-            className={`-mx-2 sm:-mx-3 px-2 sm:px-3 py-2 my-0.5 cursor-pointer transition-colors rounded-sm group ${rowTone} ${
+            onClick={onSeek ? () => onSeek(row.t) : undefined}
+            className={`-mx-2 sm:-mx-3 px-2 sm:px-3 py-2 my-0.5 transition-colors rounded-sm group ${onSeek ? "cursor-pointer" : ""} ${rowTone} ${
               row.chorus ? "border-l-4 border-gold" : ""
             }`}
           >
