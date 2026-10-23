@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { Music } from "lucide-react";
+import { ChevronDown, Music } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { analyzeUrl, isYouTubeUrl, uploadAudio } from "@/lib/api";
@@ -219,61 +219,76 @@ export default function Home() {
           </button>
         </form>
 
-        {/* Optional details — grouped in one panel so the drop zone stays hero */}
-        <div className="mt-5 bg-coal border border-white/10 shadow-hard rounded-2xl p-4 sm:p-5">
-          <p className="font-cl text-paper-dim text-[11px] uppercase tracking-[0.2em] mb-3.5">
-            Song details · optional
-          </p>
+        {/* Optional details — collapsed by default so the drop zone stays the
+            hero. Native <details> keeps it keyboard accessible and keeps the
+            typed values alive while it is closed. */}
+        <details className="group mt-5 bg-coal border border-white/10 shadow-hard rounded-2xl">
+          <summary className="flex items-center justify-between gap-3 p-4 sm:p-5 cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden rounded-2xl hover:bg-white/[0.03] transition-colors">
+            <span className="font-cl text-paper-dim text-[11px] uppercase tracking-[0.2em]">
+              Advanced
+            </span>
+            <span className="flex items-center gap-2.5">
+              <span className="hidden sm:inline font-cl text-paper-dim/60 text-[11px]">
+                title · artist · lyrics language
+              </span>
+              <ChevronDown
+                aria-hidden
+                className="w-4 h-4 text-paper-dim transition-transform duration-200 group-open:rotate-180"
+              />
+            </span>
+          </summary>
 
-          <div className="grid grid-cols-2 gap-3">
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Song title"
-              aria-label="Song title"
-              className="w-full bg-ink text-paper text-sm font-medium border border-white/10 rounded-full px-4 py-2.5 placeholder:text-paper-dim/70 focus:outline-none focus:border-viol/60 transition-colors"
-            />
-            <input
-              type="text"
-              value={artist}
-              onChange={(e) => setArtist(e.target.value)}
-              placeholder="Artist"
-              aria-label="Artist"
-              className="w-full bg-ink text-paper text-sm font-medium border border-white/10 rounded-full px-4 py-2.5 placeholder:text-paper-dim/70 focus:outline-none focus:border-viol/60 transition-colors"
-            />
-          </div>
-          <p className="font-cl text-paper-dim text-xs mt-3 leading-relaxed">
-            title + artist let us fetch verified lyrics instead of transcribing
-          </p>
+          <div className="px-4 sm:px-5 pb-4 sm:pb-5">
+            <div className="grid grid-cols-2 gap-3">
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Song title"
+                aria-label="Song title"
+                className="w-full bg-ink text-paper text-sm font-medium border border-white/10 rounded-full px-4 py-2.5 placeholder:text-paper-dim/70 focus:outline-none focus:border-viol/60 transition-colors"
+              />
+              <input
+                type="text"
+                value={artist}
+                onChange={(e) => setArtist(e.target.value)}
+                placeholder="Artist"
+                aria-label="Artist"
+                className="w-full bg-ink text-paper text-sm font-medium border border-white/10 rounded-full px-4 py-2.5 placeholder:text-paper-dim/70 focus:outline-none focus:border-viol/60 transition-colors"
+              />
+            </div>
+            <p className="font-cl text-paper-dim text-xs mt-3 leading-relaxed">
+              title + artist let us fetch verified lyrics instead of transcribing
+            </p>
 
-          <div className="mt-4 pt-4 border-t border-white/10">
-            <label
-              htmlFor="language"
-              className="block font-cl text-paper-dim text-[11px] uppercase tracking-[0.2em] mb-2.5"
-            >
-              Lyrics language
-            </label>
-            <select
-              id="language"
-              value={language}
-              onChange={(e) => setLanguage(e.target.value)}
-              className="w-full bg-ink text-paper text-sm font-medium border border-white/10 rounded-full px-4 py-2.5 cursor-pointer appearance-none pr-9 min-h-11 bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2210%22%20height%3D%226%22%3E%3Cpath%20d%3D%22M0%200h10L5%206z%22%20fill%3D%22%23a8a29a%22%2F%3E%3C%2Fsvg%3E')] bg-no-repeat bg-[right_0.9rem_center] focus:outline-none focus:border-viol/60 transition-colors"
-            >
-              {LANGUAGES.map((l) => (
-                <option key={l.value} value={l.value}>
-                  {l.label}
-                </option>
-              ))}
-            </select>
-            {language === "ml" && (
-              <p className="font-cl text-paper-dim text-xs mt-2.5 leading-relaxed">
-                Hindi & Malayalam use a larger lyric model and vocal separation
-                — analysis can take a few extra minutes.
-              </p>
-            )}
+            <div className="mt-4 pt-4 border-t border-white/10">
+              <label
+                htmlFor="language"
+                className="block font-cl text-paper-dim text-[11px] uppercase tracking-[0.2em] mb-2.5"
+              >
+                Lyrics language
+              </label>
+              <select
+                id="language"
+                value={language}
+                onChange={(e) => setLanguage(e.target.value)}
+                className="w-full bg-ink text-paper text-sm font-medium border border-white/10 rounded-full px-4 py-2.5 cursor-pointer appearance-none pr-9 min-h-11 bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2210%22%20height%3D%226%22%3E%3Cpath%20d%3D%22M0%200h10L5%206z%22%20fill%3D%22%23a8a29a%22%2F%3E%3C%2Fsvg%3E')] bg-no-repeat bg-[right_0.9rem_center] focus:outline-none focus:border-viol/60 transition-colors"
+              >
+                {LANGUAGES.map((l) => (
+                  <option key={l.value} value={l.value}>
+                    {l.label}
+                  </option>
+                ))}
+              </select>
+              {language === "ml" && (
+                <p className="font-cl text-paper-dim text-xs mt-2.5 leading-relaxed">
+                  Hindi & Malayalam use a larger lyric model and vocal separation
+                  — analysis can take a few extra minutes.
+                </p>
+              )}
+            </div>
           </div>
-        </div>
+        </details>
 
         {/* Error message */}
         {error && (
