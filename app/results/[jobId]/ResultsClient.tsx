@@ -267,7 +267,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
           }`}
         >
           <Link
-            href="/upload"
+            href="/"
             className="inline-flex items-center gap-2 min-h-11 bg-ink text-paper border border-white/10 shadow-hard-sm rounded-full px-3.5 py-2 font-display text-xs hover:-translate-y-0.5 transition-transform"
           >
             <Upload aria-hidden strokeWidth={2.5} className="w-5 h-5 text-viol" />
@@ -375,7 +375,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
                   : "An unknown error occurred.")}
             </p>
             <Link
-              href="/upload"
+              href="/"
               className="inline-flex items-center gap-2 min-h-11 bg-ink text-paper border border-white/10 shadow-hard-sm rounded-full px-3.5 py-2 font-display text-xs hover:-translate-y-0.5 transition-transform"
             >
               TRY ANOTHER FILE
@@ -396,7 +396,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
               This analysis was stopped. Upload again whenever ready.
             </p>
             <Link
-              href="/upload"
+              href="/"
               className="inline-flex items-center gap-2 min-h-11 bg-paper text-ink border border-black/5 shadow-hard-sm rounded-full px-3.5 py-2 font-display text-xs hover:-translate-y-0.5 transition-transform"
             >
               ANALYZE ANOTHER FILE
@@ -414,7 +414,7 @@ export default function ResultsClient({ jobId: routeId }: { jobId: string }) {
             >
               <div className="hidden lg:flex items-center justify-between gap-3">
                 <Link
-                  href="/upload"
+                  href="/"
                   className="inline-flex items-center gap-2 min-h-10 bg-coal border border-white/10 shadow-hard-sm rounded-full px-3 py-1.5 font-cl text-paper text-sm hover:-translate-y-0.5 hover:text-paper transition-transform"
                 >
                   <Upload aria-hidden strokeWidth={2.5} className="w-4 h-4 text-viol" />

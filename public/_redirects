@@ -2,3 +2,6 @@
 # The static export writes results/_.html (see app/results/[jobId]/page.tsx and
 # lib/staticJob.ts) and the page reads the real id from window.location.
 /results/*  /results/_  200
+
+# The upload page is the site root; old links and bookmarks land there.
+/upload  /  301

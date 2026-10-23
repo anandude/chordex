@@ -31,7 +31,7 @@ Logs: `docker compose logs -f worker`.
 
 ### Song history (Neon Postgres)
 
-"Your songs" on `/upload` is stored in Postgres. The table is created on boot,
+"Your songs" on `/` is stored in Postgres. The table is created on boot,
 so there is no migration step.
 
 1. Create a project at [console.neon.tech](https://console.neon.tech) (free tier

@@ -171,7 +171,7 @@ The Next.js app lives at the repository root (it moved out of `frontend/`).
 | Route | |
 |---|---|
 | `/` | Landing page |
-| `/upload` | Drop a file, paste a YouTube link, pick a language |
+| `/` | Drop a file, paste a YouTube link, pick a language |
 | `/results/<job_id>` | Playback controls + the chord sheet |
 
 The site is deployed as a static export, so every `/results/<id>` is served by
