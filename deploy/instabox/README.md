@@ -107,5 +107,14 @@ domain in the backend's `ALLOWED_ORIGINS` and run `docker compose up -d`.
   expire and tie downloads to that account, so treat them as a stopgap. File
   uploads always work.
 - **The API URL is public.** Anyone who has it can submit jobs.
-- **Disk.** Uploaded audio is deleted after two hours by the `cleanup`
-  service. Models live in the `hf_cache`, `torch_cache` and `ct2_models` volumes.
+- **Disk.** The box has two disks, and *where things land matters*. The 16 GB
+  root (`/`) holds the OS plus BuildKit's cache in `/var/lib/containerd`; the
+  20 GB `/data` holds Docker's images and volumes, because
+  `/etc/docker/daemon.json` sets `"data-root": "/data/docker"`. That same file
+  caps the build cache at 2 GB (`builder.gc.defaultKeepStorage`): a rebuild
+  used to add ~6 GB of blobs on `/` and die mid-export with `no space left on
+  device` while writing a layer. Check with `df -h / /data` and
+  `docker buildx du`; reclaim with `docker buildx prune -af`, which never
+  touches running images or volumes. Uploaded audio is deleted after two hours
+  by the `cleanup` service. Models live in the `hf_cache`, `torch_cache` and
+  `ct2_models` volumes.
